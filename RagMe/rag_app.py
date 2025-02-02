@@ -13,6 +13,7 @@ import time
 import numpy as np  # optional for numeric ops
 import tiktoken     # optional for token counting
 from typing import List
+import unicodedata
 
 from openai import OpenAI
 
@@ -71,6 +72,9 @@ if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
 # -----------------------------------------------------------------------------
 
 def update_stage(stage: str, data=None):
+    """
+    Update the current stage and store enhanced stage data in session state.
+    """
     st.session_state.current_stage = stage
     if data is not None:
         enhanced_data = data.copy() if isinstance(data, dict) else {'data': data}
@@ -118,21 +122,59 @@ def update_stage(stage: str, data=None):
             st.session_state.rag_state.set_stage(stage, enhanced_data)
 
 def set_openai_api_key(api_key: str):
+    """
+    Set the OpenAI API key and instantiate the new client.
+    """
     global new_client
     new_client = OpenAI(api_key=api_key)
 
 def split_text_into_chunks(text: str) -> List[str]:
+    """
+    Split text into chunks (upload and chunk stages).
+    """
     update_stage('upload', {'content': text, 'size': len(text)})
     chunks = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
     update_stage('chunk', chunks)
     return chunks
 
+def remove_emoji(text: str) -> str:
+    """
+    Remove emoji from a text string.
+    """
+    emoji_pattern = re.compile(
+        "["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub(r'', text)
+
+def sanitize_text(text: str) -> str:
+    """
+    Normalize the text and remove any non-ASCII characters.
+    """
+    # Remove emoji first
+    text = remove_emoji(text)
+    # Normalize and force ASCII-only (ignore non-ASCII characters)
+    normalized = unicodedata.normalize('NFKD', text)
+    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+    return ascii_text
+
 def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3-large"):
+    """
+    Generate vector embeddings for a list of texts.
+    Each text is sanitized to remove non-ASCII characters.
+    """
     if new_client is None:
         st.error("OpenAI client not initialized. Please set your API key in the sidebar.")
         st.stop()
     update_stage('embed')
-    response = new_client.embeddings.create(input=texts, model=openai_embedding_model)
+    # Sanitize each text to ensure it contains only ASCII characters.
+    safe_texts = [sanitize_text(s) for s in texts]
+    response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
     embeddings = [item.embedding for item in response.data]
     update_stage('embed', embeddings)
     return embeddings
@@ -165,7 +207,7 @@ def get_pipeline_component(component_args):
             description: "<strong>Text Chunking:</strong> The document is split into smaller, manageable pieces for processing.",
             dataExplanation: (data) => `
                 <strong>Your document has been split into ${data.total_chunks} chunks for optimal processing.</strong><br><br>
-                <strong>Here are the first few chunks to give you an idea of the segmentation:</strong><br>
+                <strong>Here are the first few chunks:</strong><br>
                 ${ (data.chunks || []).map((chunk, i) => `
                 <span style="color: red; font-weight: bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('<br><br>') }
             `
@@ -175,61 +217,92 @@ def get_pipeline_component(component_args):
             icon: '🧠',
             description: "<strong>Vector Embedding Generation:</strong> Each text chunk is transformed into a numerical vector using OpenAI's embedding model.",
             dataExplanation: (data) => `
-                <strong>Each chunk of text has been converted into a ${data.dimensions}-dimensional vector.</strong><br><br>
-                These vectors capture the semantic meaning of your text in a form that computers can analyze.<br><br>
+                <strong>Each chunk is converted into a ${data.dimensions}-dimensional vector.</strong><br><br>
+                These vectors capture the meaning of your text in numerical form.<br><br>
                 <strong>Technical details:</strong><br>
-                • Total vectors created: ${data.total_vectors}<br>
+                • Total vectors: ${data.total_vectors}<br>
                 • Vector dimensions: ${data.dimensions}<br>
-                • Sample vector values (first 10 dimensions):<br>
+                • Sample (first 10 dimensions):<br>
                 ${ (data.preview || []).map((val, i) => `&nbsp;&nbsp;&nbsp;&nbsp;dim${i + 1}: ${val.toFixed(6)}`).join('<br>') }<br><br>
                 <strong>Concrete Example:</strong><br>
-                Consider a text chunk "Hello, World!". The embedding process tokenizes the text (e.g., "Hello", ",", "World", "!") and maps each token to a numerical vector. <br>
-                For instance, the token "Hello" might be represented as [0.12, 0.85, -0.33, ...] across ${data.dimensions} dimensions. Each dimension captures latent features such as semantic context, sentiment, or syntactic role.
+                <span class="explanation-text">
+                Consider a text chunk "Hello, World!". First, the system splits it into parts: "Hello", ",", "World", and "!".
+                Each part is then converted into a series of numbers. For example, "Hello" might become [0.12, 0.85, -0.33, ...] across 3072 dimensions.
+                Each dimension represents a hidden feature (such as meaning [semantic context], emotion [sentiment], or grammatical role [syntactic role]).
+                The large number of dimensions (e.g. 3072) allows the system to capture even very subtle differences in language.
+                </span>
             `
         },
         store: {
             title: "Vector Database Storage",
             icon: '🗄️',
-            description: "<strong>Vector Database Storage:</strong> Storing vectors and associated text in ChromaDB.",
+            description: "<strong>Vector Database Storage:</strong> Vectors and text are stored in ChromaDB.",
             dataExplanation: (data) => `
-                <strong>Storage Details:</strong> Successfully stored ${data.count} chunks in the "${data.collection}" collection at ${data.timestamp}.<br><br>
+                <strong>Storage Details:</strong> Stored ${data.count} chunks in the "${data.collection}" collection at ${data.timestamp}.<br><br>
                 <strong>Metadata:</strong> ${JSON.stringify(data.metadata, null, 2)}
             `
         },
         query: {
             title: "Query Processing",
             icon: '❓',
-            description: "<strong>Query Processing:</strong> Your search query is processed and converted into a vector.",
+            description: "<strong>Query Processing:</strong> Your query is converted into a vector.",
             dataExplanation: (data) => `
                 <strong>Processing Query:</strong> "${data.query}"<br><br>
-                The query is tokenized and transformed into a numerical vector using the same embedding model as the document.<br><br>
-                <strong>Concrete Example:</strong><br>
-                If the query is "How does vector embedding work?", it might be tokenized into ["How", "does", "vector", "embedding", "work", "?"]. Each token is then mapped into a vector, and these are aggregated to form the final query vector. This vector is compared with the document vectors using a similarity metric (such as cosine similarity) to retrieve the most relevant results.
+                The query is broken into parts.<br>
+                <span class="explanation-text">
+                Imagine the sentence "How does vector embedding work?" being split into "How", "does", "vector", "embedding", "work", and "?".
+                Each word is translated into a numerical code (vector). These codes are then combined to form one final query vector.
+                (In simpler terms, the system converts words into numbers [tokenization and vector aggregation] and compares them using cosine similarity.)
+                </span>
             `
         },
         retrieve: {
             title: "Context Retrieval",
             icon: '🔎',
-            description: "<strong>Context Retrieval:</strong> Retrieve the most relevant passages based on vector similarity.",
+            description: "<strong>Context Retrieval:</strong> Retrieve passages based on vector similarity.",
             dataExplanation: (data) => `
-                <strong>Context Retrieval:</strong> Found ${data.passages.length} relevant passages from your document.<br><br>
+                <strong>Context Retrieval:</strong> Found ${data.passages.length} passages.<br><br>
                 <strong>Details:</strong><br>
                 ${ (data.passages || []).map((passage, i) => `
                 <span style="color: red; font-weight: bold;">Passage ${i + 1} (similarity: ${(data.scores[i] * 100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>') }<br><br>
                 <strong>Concrete Example:</strong><br>
-                Each retrieved passage’s vector is compared to the query vector using cosine similarity. A similarity score close to 100% indicates high relevance.
+                <span class="explanation-text">
+                Think of each passage as having a hidden fingerprint (its vector). If one passage has a 95% match with the query fingerprint, it means that 95 out of 100 features align perfectly.
+                In everyday language, a 95% match indicates that the passage is almost exactly what you're looking for.
+                </span>
             `
         },
         generate: {
             title: "Answer Generation",
             icon: '🤖',
-            description: "<strong>Answer Generation:</strong> GPT processes the retrieved passages to generate an answer.",
+            description: "<strong>Answer Generation:</strong> GPT generates an answer based on the retrieved passages.",
             dataExplanation: (data) => `
                 <strong>Generated Answer:</strong><br>
                 ${data.answer}
             `
         }
     };
+    
+    // Updated formatData function to remove extra indentation
+    function formatData(stage, data) {
+        if (!data) return 'Waiting for data...';
+        const process = ProcessExplanation[stage];
+        let explanation = process ? process.dataExplanation(data) : JSON.stringify(data, null, 2);
+        // Remove leading whitespace from every line to ensure left alignment
+        explanation = explanation.replace(/^\s+/gm, "");
+        return explanation;
+    }
+    
+    function formatModalContent(stage) {
+        const data = args.stageData[stage];
+        if (!data) return 'No data available for this stage.';
+        const process = ProcessExplanation[stage];
+        return React.createElement('div', { className: 'modal-content' }, [
+            React.createElement('h2', { className: 'modal-title' }, [ process.icon, ' ', process.title ]),
+            React.createElement('p', { className: 'modal-description', dangerouslySetInnerHTML: { __html: process.description } }),
+            React.createElement('div', { className: 'modal-data', dangerouslySetInnerHTML: { __html: formatData(stage, data) } })
+        ]);
+    }
     
     const ArrowIcon = () => (
         React.createElement('div', { className: 'pipeline-arrow' },
@@ -263,55 +336,32 @@ def get_pipeline_component(component_args):
         const isStageComplete = (stage) => getStageIndex(stage) < getStageIndex(activeStage);
         const stageData = args.stageData || {};
         
-        function formatData(stage, data) {
-            if (!data) return 'Waiting for data...';
-            const process = ProcessExplanation[stage];
-            return process ? process.dataExplanation(data) : JSON.stringify(data, null, 2);
-        }
-        
-        function formatModalContent(stage) {
-            const data = stageData[stage];
-            if (!data) return 'No data available for this stage.';
-            const process = ProcessExplanation[stage];
-            return React.createElement('div', { className: 'modal-content' }, [
-                React.createElement('h2', { className: 'modal-title' }, [ process.icon, ' ', process.title ]),
-                React.createElement('p', { className: 'modal-description' }, process.description),
-                React.createElement('div', { className: 'modal-data', dangerouslySetInnerHTML: { __html: formatData(stage, data) } })
-            ]);
-        }
-        
-        function openModal(stage) {
-            setSelectedStage(stage);
-            setShowModal(true);
-        }
-        
-        function closeModal() {
-            setSelectedStage(null);
-            setShowModal(false);
-        }
-        
         return React.createElement('div', { className: 'pipeline-container' },
             showModal && React.createElement('div', { className: 'tooltip-modal' },
                 React.createElement('div', { className: 'tooltip-content' },
-                    React.createElement('button', { className: 'close-button', onClick: closeModal }, 'Close'),
+                    React.createElement('button', { className: 'close-button', onClick: () => setShowModal(false) }, 'Close'),
                     formatModalContent(selectedStage)
                 )
             ),
             React.createElement('div', { className: 'pipeline-column' },
                 pipelineStages.map((stageObj, index) => {
-                    const dataObj = stageData[stageObj.id] || null;
+                    const dataObj = args.stageData[stageObj.id] || null;
                     const isActive = (activeStage === stageObj.id && dataObj);
                     const isComplete = isStageComplete(stageObj.id);
                     const process = ProcessExplanation[stageObj.id];
                     const stageClass = `pipeline-box ${isActive ? 'active-stage' : ''} ${isComplete ? 'completed-stage' : ''}`;
                     
                     return React.createElement(React.Fragment, { key: stageObj.id }, [
-                        React.createElement('div', { className: stageClass, onClick: () => openModal(stageObj.id), key: 'box' }, [
+                        React.createElement('div', { 
+                            className: stageClass,
+                            onClick: () => { setSelectedStage(stageObj.id); setShowModal(true); },
+                            key: 'box'
+                        }, [
                             React.createElement('div', { className: 'stage-header', key: 'header' }, [
                                 React.createElement('span', { className: 'stage-icon', key: 'icon' }, process.icon),
                                 React.createElement('span', { className: 'stage-title', key: 'title' }, process.title)
                             ]),
-                            React.createElement('div', { className: 'stage-description', key: 'desc' }, process.description),
+                            React.createElement('div', { className: 'stage-description', key: 'desc', dangerouslySetInnerHTML: { __html: process.description } }),
                             dataObj && React.createElement('div', { className: 'stage-data', key: 'data', dangerouslySetInnerHTML: { __html: formatData(stageObj.id, dataObj) } })
                         ]),
                         index < pipelineStages.length - 1 && React.createElement(ArrowIcon, { key: 'arrow' })
@@ -361,6 +411,7 @@ def get_pipeline_component(component_args):
             align-items: stretch;
             margin: 0 auto;
             width: 95%;
+            padding-right: 2rem; /* Extra right padding to prevent cut off on hover */
         }
         .pipeline-box {
             width: 100%;
@@ -405,6 +456,7 @@ def get_pipeline_component(component_args):
             font-size: 1rem;
             margin-bottom: 1rem;
             line-height: 1.5;
+            text-align: left;
         }
         .stage-data {
             font-family: monospace;
@@ -416,6 +468,9 @@ def get_pipeline_component(component_args):
             margin-top: 0.75rem;
             white-space: pre-wrap;
             text-align: left;
+        }
+        .explanation-text {
+            color: #FFD700; /* Yellow for explanatory text */
         }
         .pipeline-arrow {
             height: 40px;
@@ -521,7 +576,7 @@ def get_pipeline_component(component_args):
         }
     </style>
     """
-    js_code = js_code.replace("COMPONENT_ARGS_PLACEHOLDER", json.dumps(component_args))
+    js_code = js_code.replace("COMPONENT_ARGS_PLACEHOLDER", json.dumps(component_args, ensure_ascii=False))
     complete_template = html_template + js_code + css_styles
     return complete_template
 
