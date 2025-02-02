@@ -195,19 +195,22 @@ def get_pipeline_component(component_args):
         upload: {
             title: "Document Upload & Processing",
             icon: '📁',
-            description: "<strong>Document Upload & Processing:</strong> The raw document is read and prepared for processing.",
+            description: "<strong>Step 1: Gather Your Raw Material</strong><br>We begin by taking the text exactly as you provided, pulling it into our pipeline, and giving it a brief once-over. This sets the stage for everything to come. It’s the essential first step in transforming your uploaded content into something we can query with intelligence.",
             dataExplanation: (data) => `
-                <strong>Upload Details:</strong> Your document contains ${data.size || 'N/A'} bytes of text.<br><br>
-                <strong>Preview:</strong> "${data.preview || 'No preview available'}"
+                <strong>Upload Summary:</strong><br>
+                We received a file of approximately ${data.size || 'N/A'} characters, capturing your unique content.<br><br>
+                <strong>Quick Glimpse:</strong><br>
+                "${data.preview || 'No preview available'}"
             `
         },
         chunk: {
             title: "Text Chunking",
             icon: '✂️',
-            description: "<strong>Text Chunking:</strong> The document is split into smaller, manageable pieces for processing.",
+            description: "<strong>Step 2: Slicing Content into Digestible Bits</strong><br>To make it easier for our system to understand your data, we slice your text into smaller, self-contained segments. Think of it like cutting a big loaf of bread into manageable slices—each slice can be handled and analyzed on its own.",
             dataExplanation: (data) => `
-                <strong>Your document has been split into ${data.total_chunks} chunks for optimal processing.</strong><br><br>
-                <strong>Here are the first few chunks:</strong><br>
+                <strong>Chunk Breakdown:</strong><br>
+                We ended up with ${data.total_chunks} separate pieces from your text. Breaking it down this way helps us keep track of context while preserving the integrity of each part.<br><br>
+                <strong>Sample Chunks:</strong><br>
                 ${ (data.chunks || []).map((chunk, i) => `
                 <span style="color: red; font-weight: bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('<br><br>') }
             `
@@ -215,69 +218,59 @@ def get_pipeline_component(component_args):
         embed: {
             title: "Vector Embedding Generation",
             icon: '🧠',
-            description: "<strong>Vector Embedding Generation:</strong> Each text chunk is transformed into a numerical vector using OpenAI's embedding model.",
+            description: "<strong>Step 3: Translating Each Chunk into Numbers</strong><br>Now we transform every chunk into a numeric representation known as an ‘embedding.’ This is where meaning meets math. Each chunk gets a high-dimensional vector capturing its essence—making it easier for computers to 'compare' the content of different segments logically.",
             dataExplanation: (data) => `
-                <strong>Each chunk is converted into a ${data.dimensions}-dimensional vector.</strong><br><br>
-                These vectors capture the meaning of your text in numerical form.<br><br>
-                <strong>Technical details:</strong><br>
-                • Total vectors: ${data.total_vectors}<br>
-                • Vector dimensions: ${data.dimensions}<br>
-                • Sample (first 10 dimensions):<br>
-                ${ (data.preview || []).map((val, i) => `&nbsp;&nbsp;&nbsp;&nbsp;dim${i + 1}: ${val.toFixed(6)}`).join('<br>') }<br><br>
-                <strong>Concrete Example:</strong><br>
-                <span class="explanation-text">
-                Consider a text chunk "Hello, World!". First, the system splits it into parts: "Hello", ",", "World", and "!".
-                Each part is then converted into a series of numbers. For example, "Hello" might become [0.12, 0.85, -0.33, ...] across 3072 dimensions.
-                Each dimension represents a hidden feature (such as meaning [semantic context], emotion [sentiment], or grammatical role [syntactic role]).
-                The large number of dimensions (e.g. 3072) allows the system to capture even very subtle differences in language.
-                </span>
+                <strong>Embedding Stats:</strong><br>
+                Each segment is now represented by a ${data.dimensions}-dimensional vector.<br>
+                <em>Why so many numbers?</em> Because language is subtle, and these dimensions help capture the nuances in meaning.<br><br>
+                <strong>Total Embeddings:</strong> ${data.total_vectors}<br>
+                <strong>Sample Vector Snippet:</strong> (first 10 dimensions of the first embedding)<br>
+                ${ (data.preview || []).map((val, i) => "&nbsp;&nbsp;&nbsp;dim" + (i + 1) + ": " + val.toFixed(6)).join('<br>') }<br><br>
+                <strong>Deeper Insight:</strong><br>
+                Imagine we have a phrase like \"Hello, AI!\". We break it down into tokens—\"Hello\", \",\", \"AI\", and \"!\"—each turning into numbers. Stacked together, they shape a multi-thousand-dimensional fingerprint that reveals the semantics of the phrase. Next, we’ll use these fingerprints to compare or retrieve the original text whenever needed.
             `
         },
         store: {
             title: "Vector Database Storage",
             icon: '🗄️',
-            description: "<strong>Vector Database Storage:</strong> Vectors and text are stored in ChromaDB.",
+            description: "<strong>Step 4: Stashing Vectors into ChromaDB</strong><br>All those embeddings need a home. Here, we store them in a specialized database so that, at any moment, we can fetch whichever chunk best matches your needs. It’s like a well-organized library, except the indexes are vectors!",
             dataExplanation: (data) => `
-                <strong>Storage Details:</strong> Stored ${data.count} chunks in the "${data.collection}" collection at ${data.timestamp}.<br><br>
-                <strong>Metadata:</strong> ${JSON.stringify(data.metadata, null, 2)}
+                <strong>Archive Details:</strong><br>
+                We filed away ${data.count} chunks under the collection named "${data.collection}".<br>
+                <strong>Time Logged:</strong> ${data.timestamp}<br><br>
+                <strong>Additional Metadata:</strong><br>
+                ${JSON.stringify(data.metadata, null, 2)}
             `
         },
         query: {
             title: "Query Processing",
             icon: '❓',
-            description: "<strong>Query Processing:</strong> Your query is converted into a vector.",
+            description: "<strong>Step 5: Converting Your Question into a Vector</strong><br>When you ask a question, we apply the same ‘embedding’ transformation. We generate a vector that captures the question’s core meaning, priming us to compare it against the stored vectors. This step ensures the system understands what you’re looking for in a mathematically meaningful way.",
             dataExplanation: (data) => `
-                <strong>Processing Query:</strong> "${data.query}"<br><br>
-                The query is broken into parts.<br>
-                <span class="explanation-text">
-                Imagine the sentence "How does vector embedding work?" being split into "How", "does", "vector", "embedding", "work", and "?".
-                Each word is translated into a numerical code (vector). These codes are then combined to form one final query vector.
-                (In simpler terms, the system converts words into numbers [tokenization and vector aggregation] and compares them using cosine similarity.)
-                </span>
+                <strong>Query Vectorization:</strong><br>
+                \"${data.query}\"<br><br>
+                Think of it as rolling your question through the same converter used earlier. This ensures both the text you uploaded and the question you ask share a common language: vectors.
             `
         },
         retrieve: {
             title: "Context Retrieval",
             icon: '🔎',
-            description: "<strong>Context Retrieval:</strong> Retrieve passages based on vector similarity.",
+            description: "<strong>Step 6: Fishing Out the Most Relevant Chunks</strong><br>We take the newly minted query vector and compare it to our entire library of chunk vectors. The ones that line up the best (i.e., have the highest similarity) are reeled in as the best candidate passages to answer your question.",
             dataExplanation: (data) => `
-                <strong>Context Retrieval:</strong> Found ${data.passages.length} passages.<br><br>
-                <strong>Details:</strong><br>
+                <strong>Top Matches Found:</strong><br>
+                ${data.passages.length} relevant segments identified.<br><br>
                 ${ (data.passages || []).map((passage, i) => `
-                <span style="color: red; font-weight: bold;">Passage ${i + 1} (similarity: ${(data.scores[i] * 100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>') }<br><br>
-                <strong>Concrete Example:</strong><br>
-                <span class="explanation-text">
-                Think of each passage as having a hidden fingerprint (its vector). If one passage has a 95% match with the query fingerprint, it means that 95 out of 100 features align perfectly.
-                In everyday language, a 95% match indicates that the passage is almost exactly what you're looking for.
-                </span>
+                <span style="color: red; font-weight: bold;">Match ${i + 1} (similarity: ${(data.scores[i] * 100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>') }<br><br>
+                <strong>Why Similarity Matters?</strong><br>
+                If a passage aligns well with your query’s vector (like 95% similar), it means the passage is highly related to what you asked—almost as if it’s recognized the idea behind your question.
             `
         },
         generate: {
             title: "Answer Generation",
             icon: '🤖',
-            description: "<strong>Answer Generation:</strong> GPT generates an answer based on the retrieved passages.",
+            description: "<strong>Step 7: Shaping the Final Answer</strong><br>This is where GPT comes in. We feed the question and the top matching text chunks to GPT. By combining your query’s intention with context from your own data, GPT crafts a targeted answer. It’s the perfect union of clarity (via your stored information) and fluency (via GPT’s language capabilities).",
             dataExplanation: (data) => `
-                <strong>Generated Answer:</strong><br>
+                <strong>Answer Drafted:</strong><br>
                 ${data.answer}
             `
         }
