@@ -182,6 +182,7 @@ def get_pipeline_component(component_args):
     const ProcessExplanation = {
         upload: {
             title: "Document Upload & Processing",
+            icon: '📁',
             description: "The raw document is read and prepared for processing. This is the first step in making your document searchable.",
             dataExplanation: (data) => `
                 Your document has been successfully uploaded and contains ${data.size || 'N/A'} bytes of text.
@@ -192,6 +193,7 @@ def get_pipeline_component(component_args):
         },
         chunk: {
             title: "Text Chunking",
+            icon: '✂️',
             description: "The document is split into smaller, manageable pieces for processing. This helps in creating more focused and relevant search results.",
             dataExplanation: (data) => `
                 Your document has been split into ${data.total_chunks} chunks for optimal processing.
@@ -204,6 +206,7 @@ def get_pipeline_component(component_args):
         },
         embed: {
             title: "Vector Embedding Generation",
+            icon: '🧠',
             description: "Each text chunk is transformed into a numerical vector representation using OpenAI's embedding model.",
             dataExplanation: (data) => `
                 Each chunk of text has been converted into a ${data.dimensions}-dimensional vector.
@@ -222,6 +225,7 @@ def get_pipeline_component(component_args):
         },
         store: {
             title: "Vector Database Storage",
+            icon: '🗄️',
             description: "The vectors and their associated text are stored in ChromaDB for quick and efficient retrieval.",
             dataExplanation: (data) => `
                 Successfully stored all vectors in the "${data.collection}" collection.
@@ -236,6 +240,7 @@ def get_pipeline_component(component_args):
         },
         query: {
             title: "Query Processing",
+            icon: '❓',
             description: "Your search query is processed and converted into a vector for comparison with the stored document vectors.",
             dataExplanation: (data) => `
                 Currently processing your search query:
@@ -246,6 +251,7 @@ def get_pipeline_component(component_args):
         },
         retrieve: {
             title: "Context Retrieval",
+            icon: '🔎',
             description: "The most relevant passages are retrieved based on semantic similarity to your query.",
             dataExplanation: (data) => `
                 Found ${data.passages.length} relevant passages from your document.
@@ -260,6 +266,7 @@ def get_pipeline_component(component_args):
         },
         generate: {
             title: "Answer Generation",
+            icon: '🤖',
             description: "GPT processes the retrieved passages to generate a comprehensive answer to your query.",
             dataExplanation: (data) => `
                 Generated answer based on the retrieved context:
@@ -268,6 +275,12 @@ def get_pipeline_component(component_args):
             `
         }
     };
+    
+    const ArrowIcon = () => (
+        React.createElement('div', { className: 'pipeline-arrow' },
+            React.createElement('div', { className: 'arrow-body' })
+        )
+    );
     
     const RAGFlowVertical = () => {
         const [activeStage, setActiveStage] = useState(args.currentStage || null);
@@ -279,15 +292,10 @@ def get_pipeline_component(component_args):
             setActiveStage(args.currentStage);
         }, [args.currentStage]);
         
-        const pipelineStages = [
-            { id: 'upload', icon: '📁' },
-            { id: 'chunk', icon: '✂️' },
-            { id: 'embed', icon: '🧠' },
-            { id: 'store', icon: '🗄️' },
-            { id: 'query', icon: '❓' },
-            { id: 'retrieve', icon: '🔎' },
-            { id: 'generate', icon: '🤖' }
-        ];
+        const pipelineStages = Object.keys(ProcessExplanation).map(id => ({
+            id,
+            ...ProcessExplanation[id]
+        }));
         
         const getStageIndex = (stage) => {
             return pipelineStages.findIndex(s => s.id === stage);
@@ -313,9 +321,11 @@ def get_pipeline_component(component_args):
             
             const process = ProcessExplanation[stage];
             return React.createElement('div', { className: 'modal-content' }, [
-                React.createElement('h2', { className: 'modal-title' }, 
-                    process.icon + ' ' + process.title
-                ),
+                React.createElement('h2', { className: 'modal-title' }, [
+                    process.icon,
+                    ' ',
+                    process.title
+                ]),
                 React.createElement('p', { className: 'modal-description' }, 
                     process.description
                 ),
@@ -335,7 +345,7 @@ def get_pipeline_component(component_args):
             setShowModal(false);
         }
         
-        return React.createElement('div', { style: { padding: '1rem' } },
+        return React.createElement('div', { className: 'pipeline-container' },
             showModal && React.createElement('div', { className: 'tooltip-modal' },
                 React.createElement('div', { className: 'tooltip-content' },
                     React.createElement('button', { 
@@ -360,12 +370,17 @@ def get_pipeline_component(component_args):
                             key: 'box'
                         }, [
                             React.createElement('div', { 
-                                className: 'stage-title',
-                                key: 'title'
+                                className: 'stage-header',
+                                key: 'header'
                             }, [
-                                stageObj.icon,
-                                ' ',
-                                process.title
+                                React.createElement('span', { 
+                                    className: 'stage-icon',
+                                    key: 'icon'
+                                }, process.icon),
+                                React.createElement('span', { 
+                                    className: 'stage-title',
+                                    key: 'title'
+                                }, process.title)
                             ]),
                             React.createElement('div', { 
                                 className: 'stage-description',
@@ -377,10 +392,7 @@ def get_pipeline_component(component_args):
                             }, formatData(stageObj.id, dataObj))
                         ]),
                         index < pipelineStages.length - 1 && 
-                        React.createElement('div', { 
-                            className: 'pipeline-arrow-down',
-                            key: 'arrow'
-                        }, '⬇️')
+                        React.createElement(ArrowIcon, { key: 'arrow' })
                     ]);
                 })
             )
@@ -396,22 +408,27 @@ def get_pipeline_component(component_args):
             margin: 0;
             padding: 0;
         }
+        .pipeline-container {
+            padding: 2rem;
+            overflow-y: auto;
+            max-height: 100vh;
+        }
         #rag-root {
             font-family: system-ui, sans-serif;
             color: white;
-            min-height: 100vh;
-            padding-bottom: 2rem;
+            height: 100%;
         }
         .pipeline-column {
             display: flex;
             flex-direction: column;
             align-items: center;
             margin: 1rem auto;
+            width: 100%;
+            max-width: 800px;
         }
         .pipeline-box {
-            width: 90%;
-            max-width: 400px;
-            margin: 0 auto 1.5rem;
+            width: 100%;
+            margin: 0 auto 1rem;
             padding: 1.5rem;
             border: 2px solid #4B5563;
             border-radius: 0.75rem;
@@ -428,19 +445,19 @@ def get_pipeline_component(component_args):
             background-color: rgba(34, 197, 94, 0.1);
             border-color: #22C55E;
         }
-        .pipeline-arrow-down {
-            margin-bottom: 1rem;
-            font-size: 2rem;
-            color: #9CA3AF;
+        .stage-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .stage-icon {
+            font-size: 1.5rem;
         }
         .stage-title {
             font-weight: bold;
             font-size: 1.2rem;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
             color: white;
-            margin-bottom: 0.5rem;
         }
         .stage-description {
             color: #9CA3AF;
@@ -462,6 +479,37 @@ def get_pipeline_component(component_args):
         .active-stage {
             border-color: #22C55E;
             box-shadow: 0 0 15px rgba(34, 197, 94, 0.2);
+        }
+        .pipeline-arrow {
+            height: 40px;
+            position: relative;
+            margin: 0.5rem 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .arrow-body {
+            width: 3px;
+            height: 100%;
+            background: linear-gradient(to bottom, 
+                rgba(156, 163, 175, 0) 0%,
+                rgba(156, 163, 175, 1) 30%,
+                rgba(156, 163, 175, 1) 70%,
+                rgba(156, 163, 175, 0) 100%
+            );
+            position: relative;
+        }
+        .arrow-body::after {
+            content: '';
+            position: absolute;
+            bottom: 30%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: 8px solid transparent;
+            border-right: 8px solid transparent;
+            border-top: 12px solid #9CA3AF;
         }
         .tooltip-modal {
             position: fixed;
@@ -655,7 +703,7 @@ def generate_answer_with_gpt(query: str,
 def main():
     st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
     
-    # Set custom Streamlit styles
+    # Set custom Streamlit styles for the layout
     st.markdown("""
         <style>
         .main {
@@ -665,10 +713,21 @@ def main():
             background-color: #111;
             color: white;
         }
+        [data-testid="column"] {
+            width: calc(100% + 2rem);
+            margin-left: -1rem;
+        }
+        [data-testid="column"]:first-child {
+            width: 33.33%;
+            padding-right: 2rem;
+        }
+        [data-testid="column"]:last-child {
+            width: 66.67%;
+        }
         </style>
     """, unsafe_allow_html=True)
     
-    st.title("RAG Pipeline Demo (Vertical & Real-Time)")
+    st.title("RAG Pipeline Demo")
 
     # Sidebar configuration
     st.sidebar.header("Configuration")
@@ -676,7 +735,7 @@ def main():
     if api_key:
         set_openai_api_key(api_key)
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 2])  # Set column ratio to 1:2
 
     with col1:
         st.header("Document and Query Input")
@@ -724,11 +783,11 @@ def main():
             }
         }
         
-        # Render the enhanced pipeline visualization
+        # Render the enhanced pipeline visualization with increased height
         components.html(
             get_pipeline_component(component_args),
-            height=1500,  # Increased height to avoid scrollbar
-            scrolling=False  # Disabled scrolling as we're handling it within the component
+            height=2000,  # Increased height to show all stages
+            scrolling=True  # Enable scrolling for the component
         )
 
 if __name__ == "__main__":
