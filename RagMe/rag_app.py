@@ -167,110 +167,172 @@ def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3
     return embeddings
 
 def get_pipeline_component(component_args):
-    # Base HTML template
     html_template = """
     <div id="rag-root"></div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.production.min.js"></script>
     """
 
-    # JavaScript code as a separate string
     js_code = """
     <script>
     const args = COMPONENT_ARGS_PLACEHOLDER;
     
     const { useState, useEffect } = React;
     
+    const ProcessExplanation = {
+        upload: {
+            title: "Document Upload & Processing",
+            description: "The raw document is read and prepared for processing. This is the first step in making your document searchable.",
+            dataExplanation: (data) => `
+                Your document has been successfully uploaded and contains ${data.size || 'N/A'} bytes of text.
+                
+                Preview of the beginning of your document:
+                "${data.preview || 'No preview available'}"
+            `
+        },
+        chunk: {
+            title: "Text Chunking",
+            description: "The document is split into smaller, manageable pieces for processing. This helps in creating more focused and relevant search results.",
+            dataExplanation: (data) => `
+                Your document has been split into ${data.total_chunks} chunks for optimal processing.
+                
+                Here are the first few chunks to give you an idea of the segmentation:
+                ${(data.chunks || []).map((chunk, i) => `
+                Chunk ${i + 1}:
+                "${chunk}"`).join('\\n\\n')}
+            `
+        },
+        embed: {
+            title: "Vector Embedding Generation",
+            description: "Each text chunk is transformed into a numerical vector representation using OpenAI's embedding model.",
+            dataExplanation: (data) => `
+                Each chunk of text has been converted into a ${data.dimensions}-dimensional vector.
+                
+                These vectors capture the semantic meaning of your text in a way that computers can understand and compare.
+                
+                Technical details:
+                • Total vectors created: ${data.total_vectors}
+                • Vector dimensions: ${data.dimensions}
+                • Sample vector values (first 10 dimensions):
+                  ${(data.preview || []).map((val, i) => `
+                  dim${i + 1}: ${val.toFixed(6)}`).join('')}
+                
+                These vectors will be used to find the most relevant parts of your document during searches.
+            `
+        },
+        store: {
+            title: "Vector Database Storage",
+            description: "The vectors and their associated text are stored in ChromaDB for quick and efficient retrieval.",
+            dataExplanation: (data) => `
+                Successfully stored all vectors in the "${data.collection}" collection.
+                
+                Storage details:
+                • Total chunks stored: ${data.count}
+                • Storage timestamp: ${data.timestamp}
+                • Metadata added: ${JSON.stringify(data.metadata, null, 2)}
+                
+                Your document is now fully indexed and ready for semantic search!
+            `
+        },
+        query: {
+            title: "Query Processing",
+            description: "Your search query is processed and converted into a vector for comparison with the stored document vectors.",
+            dataExplanation: (data) => `
+                Currently processing your search query:
+                "${data.query}"
+                
+                The query will be converted into a vector and compared with all stored document chunks to find the most relevant matches.
+            `
+        },
+        retrieve: {
+            title: "Context Retrieval",
+            description: "The most relevant passages are retrieved based on semantic similarity to your query.",
+            dataExplanation: (data) => `
+                Found ${data.passages.length} relevant passages from your document.
+                
+                Retrieved passages by relevance score:
+                ${(data.passages || []).map((passage, i) => `
+                Passage ${i + 1} (similarity: ${(data.scores[i] * 100).toFixed(1)}%):
+                "${passage}"`).join('\\n\\n')}
+                
+                These passages will be used to generate a comprehensive answer to your query.
+            `
+        },
+        generate: {
+            title: "Answer Generation",
+            description: "GPT processes the retrieved passages to generate a comprehensive answer to your query.",
+            dataExplanation: (data) => `
+                Generated answer based on the retrieved context:
+                
+                ${data.answer}
+            `
+        }
+    };
+    
     const RAGFlowVertical = () => {
         const [activeStage, setActiveStage] = useState(args.currentStage || null);
         const [modalContent, setModalContent] = useState(null);
         const [showModal, setShowModal] = useState(false);
+        const [selectedStage, setSelectedStage] = useState(null);
         
         useEffect(() => {
             setActiveStage(args.currentStage);
         }, [args.currentStage]);
         
         const pipelineStages = [
-            {
-                id: 'upload',
-                title: '📁 Upload Document',
-                description: 'Raw doc read from disk'
-            },
-            {
-                id: 'chunk',
-                title: '✂️ Chunk Text',
-                description: 'Split doc into pieces'
-            },
-            {
-                id: 'embed',
-                title: '🧠 Vector Embedding',
-                description: 'OpenAI vectorizing text'
-            },
-            {
-                id: 'store',
-                title: '🗄️ Vector Storage',
-                description: 'ChromaDB storing vectors'
-            },
-            {
-                id: 'query',
-                title: '❓ Query Processing',
-                description: 'Embedding + searching'
-            },
-            {
-                id: 'retrieve',
-                title: '🔎 Context Retrieval',
-                description: 'Finding relevant passages'
-            },
-            {
-                id: 'generate',
-                title: '🤖 Answer Generation',
-                description: 'Final GPT response'
-            }
+            { id: 'upload', icon: '📁' },
+            { id: 'chunk', icon: '✂️' },
+            { id: 'embed', icon: '🧠' },
+            { id: 'store', icon: '🗄️' },
+            { id: 'query', icon: '❓' },
+            { id: 'retrieve', icon: '🔎' },
+            { id: 'generate', icon: '🤖' }
         ];
+        
+        const getStageIndex = (stage) => {
+            return pipelineStages.findIndex(s => s.id === stage);
+        };
+
+        const isStageComplete = (stage) => {
+            const currentIndex = getStageIndex(activeStage);
+            const stageIndex = getStageIndex(stage);
+            return stageIndex < currentIndex;
+        };
         
         const stageData = args.stageData || {};
         
         function formatData(stage, data) {
-            if (!data) return 'No data yet.';
-            switch(stage) {
-                case 'upload':
-                    return `Preview: ${data.preview || ''}\nSize: ${data.size || ''} bytes`;
-                case 'chunk':
-                    const firstChunks = (data.chunks || []).slice(0,2).join('\\n\\n');
-                    return `First chunks: ${firstChunks}\nTotal Chunks: ${data.total_chunks}`;
-                case 'embed':
-                    return `Dimensions: ${data.dimensions}\nVectors: ${data.total_vectors}`;
-                case 'store':
-                    return `Collection: ${data.collection}\nVectors Stored: ${data.count}`;
-                case 'query':
-                    return `User Query: ${data.query || ''}`;
-                case 'retrieve':
-                    if (!data.passages) return 'No passages.';
-                    const firstPass = (data.passages && data.passages.length>0) 
-                                    ? data.passages[0].slice(0,120) 
-                                    : '';
-                    return `First Passage: ${firstPass}...\nScores: [${data.scores.join(', ')}]`;
-                case 'generate':
-                    if (!data.answer) return 'No answer.';
-                    return `Answer preview: ${data.answer.slice(0,100)}...`;
-                default:
-                    return JSON.stringify(data, null, 2);
-            }
+            if (!data) return 'Waiting for data...';
+            const process = ProcessExplanation[stage];
+            return process ? process.dataExplanation(data) : JSON.stringify(data, null, 2);
+        }
+        
+        function formatModalContent(stage) {
+            const data = stageData[stage];
+            if (!data) return 'No data available for this stage.';
+            
+            const process = ProcessExplanation[stage];
+            return React.createElement('div', { className: 'modal-content' }, [
+                React.createElement('h2', { className: 'modal-title' }, 
+                    process.icon + ' ' + process.title
+                ),
+                React.createElement('p', { className: 'modal-description' }, 
+                    process.description
+                ),
+                React.createElement('div', { className: 'modal-data' }, 
+                    React.createElement('pre', null, formatData(stage, data))
+                )
+            ]);
         }
         
         function openModal(stage) {
-            const data = stageData[stage];
-            if (!data) {
-                setModalContent('No data for stage.');
-            } else {
-                setModalContent(JSON.stringify(data, null, 2));
-            }
+            setSelectedStage(stage);
             setShowModal(true);
         }
         
         function closeModal() {
+            setSelectedStage(null);
             setShowModal(false);
-            setModalContent(null);
         }
         
         return React.createElement('div', { style: { padding: '1rem' } },
@@ -280,14 +342,16 @@ def get_pipeline_component(component_args):
                         className: 'close-button',
                         onClick: closeModal 
                     }, 'Close'),
-                    React.createElement('pre', null, modalContent)
+                    formatModalContent(selectedStage)
                 )
             ),
             React.createElement('div', { className: 'pipeline-column' },
                 pipelineStages.map((stageObj, index) => {
                     const dataObj = stageData[stageObj.id] || null;
                     const isActive = (activeStage === stageObj.id && dataObj);
-                    const stageClass = 'pipeline-box ' + (isActive ? 'active-stage' : '');
+                    const isComplete = isStageComplete(stageObj.id);
+                    const process = ProcessExplanation[stageObj.id];
+                    const stageClass = `pipeline-box ${isActive ? 'active-stage' : ''} ${isComplete ? 'completed-stage' : ''}`;
                     
                     return React.createElement(React.Fragment, { key: stageObj.id }, [
                         React.createElement('div', { 
@@ -298,17 +362,17 @@ def get_pipeline_component(component_args):
                             React.createElement('div', { 
                                 className: 'stage-title',
                                 key: 'title'
-                            }, stageObj.title),
+                            }, [
+                                stageObj.icon,
+                                ' ',
+                                process.title
+                            ]),
                             React.createElement('div', { 
                                 className: 'stage-description',
                                 key: 'desc'
-                            }, stageObj.description),
-                            React.createElement('div', { 
-                                style: { 
-                                    marginTop: '0.5rem',
-                                    fontSize: '0.85rem',
-                                    color: '#D1D5DB'
-                                },
+                            }, process.description),
+                            dataObj && React.createElement('div', { 
+                                className: 'stage-data',
                                 key: 'data'
                             }, formatData(stageObj.id, dataObj))
                         ]),
@@ -324,7 +388,6 @@ def get_pipeline_component(component_args):
     };
     """
 
-    # CSS styles
     css_styles = """
     const styles = `
         body {
@@ -337,6 +400,7 @@ def get_pipeline_component(component_args):
             font-family: system-ui, sans-serif;
             color: white;
             min-height: 100vh;
+            padding-bottom: 2rem;
         }
         .pipeline-column {
             display: flex;
@@ -348,16 +412,21 @@ def get_pipeline_component(component_args):
             width: 90%;
             max-width: 400px;
             margin: 0 auto 1.5rem;
-            padding: 1rem;
+            padding: 1.5rem;
             border: 2px solid #4B5563;
-            border-radius: 0.5rem;
+            border-radius: 0.75rem;
             position: relative;
-            transition: transform 0.3s;
-            background-color: #333;
+            transition: all 0.3s;
+            background-color: #1a1a1a;
             cursor: pointer;
         }
         .pipeline-box:hover {
             transform: scale(1.02);
+            border-color: #6B7280;
+        }
+        .completed-stage {
+            background-color: rgba(34, 197, 94, 0.1);
+            border-color: #22C55E;
         }
         .pipeline-arrow-down {
             margin-bottom: 1rem;
@@ -366,19 +435,33 @@ def get_pipeline_component(component_args):
         }
         .stage-title {
             font-weight: bold;
-            font-size: 1.1rem;
+            font-size: 1.2rem;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.75rem;
             color: white;
+            margin-bottom: 0.5rem;
         }
         .stage-description {
             color: #9CA3AF;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            line-height: 1.5;
+        }
+        .stage-data {
+            font-family: monospace;
             font-size: 0.9rem;
-            margin-top: 0.25rem;
+            color: #D1D5DB;
+            background-color: rgba(0, 0, 0, 0.2);
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            margin-top: 0.75rem;
+            white-space: pre-wrap;
+            overflow-x: auto;
         }
         .active-stage {
             border-color: #22C55E;
+            box-shadow: 0 0 15px rgba(34, 197, 94, 0.2);
         }
         .tooltip-modal {
             position: fixed;
@@ -386,30 +469,81 @@ def get_pipeline_component(component_args):
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0,0,0,0.7);
+            background-color: rgba(0, 0, 0, 0.8);
             display: flex;
             align-items: center;
             justify-content: center;
             z-index: 9999;
         }
         .tooltip-content {
-            background: #111;
+            background: #1a1a1a;
             padding: 2rem;
-            border-radius: 0.5rem;
-            max-width: 80%;
-            max-height: 80%;
+            border-radius: 1rem;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
             overflow-y: auto;
             color: #fff;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+        }
+        .tooltip-content::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .tooltip-content::-webkit-scrollbar-track {
+            background: #333;
+            border-radius: 4px;
+        }
+        .tooltip-content::-webkit-scrollbar-thumb {
+            background: #666;
+            border-radius: 4px;
+        }
+        .tooltip-content::-webkit-scrollbar-thumb:hover {
+            background: #888;
         }
         .close-button {
-            background: #f87171;
+            background: #dc2626;
             border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 0.25rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
             cursor: pointer;
-            margin-bottom: 1rem;
+            margin-bottom: 1.5rem;
             font-weight: bold;
             color: white;
+            transition: background-color 0.3s;
+        }
+        .close-button:hover {
+            background: #ef4444;
+        }
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            color: white;
+        }
+        .modal-description {
+            color: #9CA3AF;
+            font-size: 1.1rem;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+        .modal-data {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            margin-top: 1rem;
+        }
+        .modal-data pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: #D1D5DB;
+            font-family: monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+        .completed-stage .stage-description {
+            color: rgba(156, 163, 175, 0.8);
         }
     `;
     
@@ -519,10 +653,24 @@ def generate_answer_with_gpt(query: str,
 # -----------------------------------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="RAG Demo", layout="wide")
+    st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
+    
+    # Set custom Streamlit styles
+    st.markdown("""
+        <style>
+        .main {
+            padding: 2rem;
+        }
+        .stApp {
+            background-color: #111;
+            color: white;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     st.title("RAG Pipeline Demo (Vertical & Real-Time)")
 
-    # Sidebar: Enter API key
+    # Sidebar configuration
     st.sidebar.header("Configuration")
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
@@ -563,14 +711,10 @@ def main():
                 st.subheader("Generated Answer:")
                 st.write(answer)
 
-    # -------------
-    # REACT VISUALIZATION
-    # -------------
-
     with col2:
         st.title("🌀 Pipeline Visualization")
         
-        # Prepare dynamic data
+        # Prepare dynamic data for the pipeline visualization
         component_args = {
             'currentStage': st.session_state.current_stage,
             'stageData': {
@@ -580,11 +724,11 @@ def main():
             }
         }
         
-        # Render the pipeline visualization
+        # Render the enhanced pipeline visualization
         components.html(
             get_pipeline_component(component_args),
-            height=1200,
-            scrolling=True
+            height=1500,  # Increased height to avoid scrollbar
+            scrolling=False  # Disabled scrolling as we're handling it within the component
         )
 
 if __name__ == "__main__":
