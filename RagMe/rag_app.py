@@ -13,6 +13,7 @@ import time
 import numpy as np  # optional for numeric ops
 import tiktoken     # optional for token counting
 from typing import List
+import unicodedata
 
 from openai import OpenAI
 
@@ -33,11 +34,9 @@ chroma_client = chromadb.Client(
 # SESSION STATE INIT
 # -----------------------------------------------------------------------------
 
-# Track the pipeline's current stage
 if 'current_stage' not in st.session_state:
     st.session_state.current_stage = None
 
-# Track stage data for each pipeline step
 for stage in ['upload', 'chunk', 'embed', 'store', 'query', 'retrieve', 'generate']:
     if f'{stage}_data' not in st.session_state:
         st.session_state[f'{stage}_data'] = None
@@ -73,17 +72,17 @@ if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
 # -----------------------------------------------------------------------------
 
 def update_stage(stage: str, data=None):
-    """
-    Real-time pipeline stage update with improved state management.
-    """
     st.session_state.current_stage = stage
     if data is not None:
-        enhanced_data = data.copy() if isinstance(data, dict) else {'data': data}
+        if stage == 'embed' and isinstance(data, dict):
+            enhanced_data = data
+        else:
+            enhanced_data = data.copy() if isinstance(data, dict) else {'data': data}
 
         if stage == 'upload':
             text = data.get('content', '') if isinstance(data, dict) else data
-            enhanced_data['preview'] = text[:200] if text else None
-            enhanced_data['size'] = len(text) if text else 0
+            enhanced_data['preview'] = text[:600] if text else None
+            enhanced_data['full'] = text
 
         elif stage == 'chunk':
             enhanced_data = {
@@ -91,20 +90,12 @@ def update_stage(stage: str, data=None):
                 'total_chunks': len(data)
             }
 
-        elif stage == 'embed':
-            enhanced_data = {
-                'dimensions': len(data[0]) if data else 0,
-                'preview': data[0][:10] if data else [],
-                'total_vectors': len(data)
-            }
-            if 'chunk_data' in st.session_state:
-                enhanced_data['chunk'] = st.session_state.chunk_data
-
         elif stage == 'store':
             enhanced_data['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S')
 
         elif stage == 'query':
-            enhanced_data = {'query': data.get('query')}
+            # Preserve all the keys provided for the query stage.
+            enhanced_data = data.copy() if isinstance(data, dict) else {'query': data}
 
         elif stage == 'retrieve':
             if isinstance(data, dict):
@@ -122,16 +113,8 @@ def update_stage(stage: str, data=None):
 
         st.session_state[f'{stage}_data'] = enhanced_data
 
-        # Ensure the stage data persists
-        if stage == 'chunk':
-            st.session_state.chunk_data = data
-            
-    # Force a rerun to update the visualization
-    # st.experimental_rerun()
-
-    # Short sleep & st.rerun
-    # time.sleep(0.8)
-    # st.rerun()
+        if 'rag_state' in st.session_state and st.session_state.rag_state is not None:
+            st.session_state.rag_state.set_stage(stage, enhanced_data)
 
 def set_openai_api_key(api_key: str):
     """
@@ -142,31 +125,82 @@ def set_openai_api_key(api_key: str):
 
 def split_text_into_chunks(text: str) -> List[str]:
     """
-    Step 1: 'upload', Step 2: 'chunk'
+    Split text into chunks (upload and chunk stages).
     """
     update_stage('upload', {'content': text, 'size': len(text)})
-    # The script reruns after 'upload'; so next lines will run again after re-run
     chunks = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
     update_stage('chunk', chunks)
-    # Re-run after chunk
     return chunks
 
-def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3-large"):
+def remove_emoji(text: str) -> str:
     """
-    'embed' stage.
+    Remove emoji from a text string.
     """
+    emoji_pattern = re.compile(
+        "["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub(r'', text)
+
+def sanitize_text(text: str) -> str:
+    """
+    Normalize the text and remove any non-ASCII characters.
+    """
+    # Remove emoji first
+    text = remove_emoji(text)
+    # Normalize and force ASCII-only (ignore non-ASCII characters)
+    normalized = unicodedata.normalize('NFKD', text)
+    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+    return ascii_text
+
+def embed_text(
+    texts: List[str],
+    openai_embedding_model: str = "text-embedding-3-large",
+    update_stage_flag=True,
+    return_data=False
+):
     if new_client is None:
         st.error("OpenAI client not initialized. Please set your API key in the sidebar.")
         st.stop()
-
-    # Pre-update
-    update_stage('embed')
-    # after re-run
-    response = new_client.embeddings.create(input=texts, model=openai_embedding_model)
+    safe_texts = [sanitize_text(s) for s in texts]
+    response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
     embeddings = [item.embedding for item in response.data]
-
-    # Post-update
-    update_stage('embed', embeddings)
+    
+    # Compute token breakdown (using simple whitespace tokenization)
+    token_breakdowns = []
+    for text, embedding in zip(safe_texts, embeddings):
+        tokens = text.split()
+        n_tokens = len(tokens)
+        breakdown = []
+        if n_tokens > 0:
+            dims_per_token = len(embedding) // n_tokens
+            for i, token in enumerate(tokens):
+                start = i * dims_per_token
+                end = (i + 1) * dims_per_token if i < n_tokens - 1 else len(embedding)
+                token_vector = embedding[start:end]
+                breakdown.append({
+                    "token": token,
+                    "vector_snippet": token_vector[:10]  # first 10 dims for display
+                })
+        token_breakdowns.append(breakdown)
+    
+    embedding_data = {
+        "embeddings": embeddings,
+        "dimensions": len(embeddings[0]) if embeddings else 0,
+        "preview": embeddings[0][:10] if embeddings else [],
+        "total_vectors": len(embeddings),
+        "token_breakdowns": token_breakdowns
+    }
+    
+    if update_stage_flag:
+        update_stage('embed', embedding_data)
+    if return_data:
+        return embedding_data
     return embeddings
 
 def get_pipeline_component(component_args):
@@ -175,284 +209,193 @@ def get_pipeline_component(component_args):
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.production.min.js"></script>
     """
-
     js_code = """
     <script>
     const args = COMPONENT_ARGS_PLACEHOLDER;
-    
     const { useState, useEffect } = React;
     
     const ProcessExplanation = {
         upload: {
-            title: "Document Upload & Processing",
-            icon: '📁',
-            description: "The raw document is read and prepared for processing. This is the first step in making your document searchable.",
-            dataExplanation: (data) => `
-                Your document has been successfully uploaded and contains ${data.size || 'N/A'} bytes of text.
-                
-                Preview of the beginning of your document:
-                "${data.preview || 'No preview available'}"
-            `
+        title: "Document Upload & Processing",
+        icon: '📁',
+        description: "<strong>Step 1: Gather Your Raw Material</strong><br>We begin by taking the text exactly as you provided, pulling it into our pipeline, and giving it a brief once-over. This sets the stage for everything to come. It’s the essential first step in transforming your uploaded content into something we can query with intelligence.",
+        summaryDataExplanation: (data) => `
+<strong>Upload Summary:</strong><br>
+Received ~${data.size || 'N/A'} characters.<br>
+<strong>Preview:</strong> "${data.preview || 'No preview available'}"
+        `.trim(),
+        dataExplanation: (data) => `
+<strong>Upload Details (Expanded):</strong><br>
+Received ~${data.size || 'N/A'} characters.<br>
+<strong>Full Content:</strong><br>
+${data.full || data.preview || 'No content available.'}
+        `.trim()
         },
         chunk: {
             title: "Text Chunking",
             icon: '✂️',
-            description: "The document is split into smaller, manageable pieces for processing. This helps in creating more focused and relevant search results.",
+            description: "<strong>Step 2: Slicing Content into Digestible Bits</strong><br>To make it easier for our system to understand your data, we slice your text into smaller, self-contained segments. Think of it like cutting a big loaf of bread into manageable slices—each slice can be handled and analyzed on its own.",
+            summaryDataExplanation: (data) => `
+<strong>Chunk Breakdown (Summary):</strong><br>
+Total Chunks: ${data.total_chunks}<br>
+Sample Chunks: ${ (data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
+            `.trim(),
             dataExplanation: (data) => `
-                **Chunking Analysis:**
-                Your document has been divided into ${data.total_chunks} logical segments.
-                
-                ${(data.chunks || []).map((chunk, i) => `
-                <span style="color: #ff6b6b; font-weight: bold">Chunk ${i + 1}:</span>
-                "${chunk}"`).join('\\n\\n')}
-                
-                **Chunking Strategy:**
-                • Semantic boundaries preserved
-                • Optimal size for context retention
-                • Overlapping considered for context continuity
-            `
+<strong>Chunk Breakdown (Expanded):</strong><br>
+Total Chunks: ${data.total_chunks}<br>
+All Chunks:<br>
+${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
+            `.trim()
         },
         embed: {
             title: "Vector Embedding Generation",
             icon: '🧠',
-            description: "Each text chunk is transformed into a numerical vector representation using OpenAI's embedding model.",
+            description: "<strong>Step 3: Translating Each Chunk into Numbers</strong><br>Now we transform every chunk into a numeric representation known as an ‘embedding.’ This is where meaning meets math. Each chunk gets a high-dimensional vector capturing its essence—making it easier for computers to 'compare' the content of different segments logically.",
+            summaryDataExplanation: (data) => `
+<strong>Embedding Stats (Summary):</strong><br>
+Each segment is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Embeddings: ${data.total_vectors}<br>
+Sample Token Breakdown (first 3 chunks): ${ data.token_breakdowns.slice(0,3).map((chunkBreakdown, idx) => `
+<br><strong>Chunk ${idx + 1}:</strong>
+${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]` ).join("") }
+`).join("") }
+            `.trim(),
             dataExplanation: (data) => `
-                **Vectorization Process Explained:**
-                
-                Taking a sample chunk from your text:
-                "${(stageData.chunk && stageData.chunk.chunks && stageData.chunk.chunks[0]) || 'Sample text'}"
-
-                1. **Text Pre-processing:**
-                   • Normalize case and remove special characters
-                   • Break into tokens (words and subwords)
-                   • Apply semantic context analysis
-                
-                2. **Dimensional Mapping:**
-                   Each token is analyzed across ${data.dimensions} different dimensions including:
-                   • Semantic meaning (e.g., "bank" → financial vs. riverside)
-                   • Contextual relationships
-                   • Part of speech roles
-                   • Topic associations
-                
-                3. **Vector Generation:**
-                   The model creates a ${data.dimensions}-dimensional vector where each dimension 
-                   represents a different aspect of meaning.
-                
-                **Technical Details:**
-                • Vectors created: ${data.total_vectors}
-                • Dimensions per vector: ${data.dimensions}
-                • First 10 dimensions of sample vector:
-                  ${(data.preview || []).map((val, i) => `
-                  dim${i + 1}: ${val.toFixed(6)} → ${i === 0 ? 'semantic similarity to financial terms' : 
-                    i === 1 ? 'presence of proper nouns' :
-                    i === 2 ? 'temporal context strength' :
-                    i === 3 ? 'topic coherence score' :
-                    i === 4 ? 'sentiment polarity' :
-                    i === 5 ? 'contextual ambiguity' :
-                    i === 6 ? 'technical terminology density' :
-                    i === 7 ? 'narrative flow indicator' :
-                    i === 8 ? 'conceptual abstraction level' :
-                    'semantic space position'}`).join('')}
-                
-                **Why This Matters:**
-                • Each dimension captures a different aspect of meaning
-                • Similar concepts will have similar values in specific dimensions
-                • This allows for nuanced semantic search and comparison
-                • Higher dimensional spaces enable more precise matching
-            `
+<strong>Embedding Stats (Expanded):</strong><br>
+Each segment is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Embeddings: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims of the first embedding):</strong><br>
+${ data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns.map((chunkBreakdown, idx) => `
+<br><strong>Chunk ${idx + 1}:</strong>
+${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]` ).join("") }
+`).join("") }
+            `.trim()
         },
         store: {
             title: "Vector Database Storage",
             icon: '🗄️',
-            description: "The vectors and their associated text are stored in ChromaDB for quick and efficient retrieval.",
+            description: "<strong>Step 4: Stashing Vectors into ChromaDB</strong><br>All those embeddings need a home. Here, we store them in a specialized database so that, at any moment, we can fetch whichever chunk best matches your needs. It’s like a well-organized library, except the indexes are vectors!",
+            summaryDataExplanation: (data) => `
+<strong>Storage Summary:</strong><br>
+Stored ${data.count} chunks in the collection "${data.collection}".
+            `.trim(),
             dataExplanation: (data) => `
-                Successfully stored all vectors in the "${data.collection}" collection.
-                
-                Storage details:
-                • Total chunks stored: ${data.count}
-                • Storage timestamp: ${data.timestamp}
-                • Metadata added: ${JSON.stringify(data.metadata, null, 2)}
-                
-                Your document is now fully indexed and ready for semantic search!
-            `
+<strong>Storage Details (Expanded):</strong><br>
+Stored ${data.count} chunks in the collection "${data.collection}".
+            `.trim()
         },
         query: {
-            title: "Query Processing",
-            icon: '❓',
-            description: "Your search query is processed and converted into a vector for comparison with the stored document vectors.",
-            dataExplanation: (data) => `
-                **Query Analysis Process:**
-                
-                Original Query: "${data.query}"
-                
-                1. **Query Pre-processing:**
-                   • Normalization: Convert to lowercase, remove special characters
-                   • Tokenization: Break into meaningful units
-                   • Expansion: Add relevant synonyms and related terms
-                
-                2. **Vector Creation:**
-                   Your query is converted into the same ${data.dimensions || 1536}-dimensional space as the document chunks:
-                   • Each dimension captures specific semantic aspects
-                   • Maintains consistency with document vectors
-                   • Enables direct comparison with stored content
-                
-                3. **Sample Vector Components:**
-                   ${(data.preview || [0.1, 0.2, 0.3]).slice(0,3).map((val, i) => `
-                   • Component ${i+1}: ${val.toFixed(6)} (${
-                     i === 0 ? 'primary topic weight' :
-                     i === 1 ? 'context relevance' :
-                     'semantic specificity'
-                   })`).join('')}
-                
-                **Next Steps:**
-                • Vector similarity computation
-                • Relevance ranking
-                • Context retrieval
-            `
-        },
+    title: "Query Vectorization",
+    icon: '❓',
+    description: "<strong>Step 5: Converting Your Question into a Vector</strong><br>When you ask a question, we convert your query into a vector. This ensures that your question is represented in the same high-dimensional space as your document embeddings, enabling precise comparisons.",
+    // Use the same formatting for both summary and expanded views:
+    summaryDataExplanation: (data) => `
+<strong>Query Vectorization:</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
+Each query is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Vectors: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims):</strong><br>
+${ data.preview ? data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") : "N/A" }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns ? data.token_breakdowns.map((chunk) => {
+    return chunk.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]`).join("");
+}).join("") : "N/A" }
+    `.trim(),
+    dataExplanation: (data) => `
+<strong>Query Vectorization:</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
+Each query is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Vectors: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims):</strong><br>
+${ data.preview ? data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") : "N/A" }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns ? data.token_breakdowns.map((chunk) => {
+    return chunk.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]`).join("");
+}).join("") : "N/A" }
+    `.trim()
+},
         retrieve: {
             title: "Context Retrieval",
             icon: '🔎',
-            description: "The most relevant passages are retrieved based on semantic similarity to your query.",
+            description: "<strong>Step 6: Fishing Out the Most Relevant Chunks</strong><br>We take the newly minted query vector and compare it to our entire library of chunk vectors. The ones that line up the best (i.e., have the highest similarity) are reeled in as the best candidate passages to answer your question.",
+            summaryDataExplanation: (data) => `
+<strong>Top Matches (Summary):</strong><br>
+${data.passages.slice(0, Math.ceil(data.passages.length/2)).map((passage, i) => `<br><span style="color:red;font-weight:bold;">Match ${i + 1} (similarity: ${(data.scores[i]*100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>')}
+            `.trim(),
             dataExplanation: (data) => `
-                **Context Retrieval Analysis:**
-                
-                Found ${data.passages.length} relevant passages using semantic search.
-                
-                **Retrieved Passages with Similarity Analysis:**
-                ${(data.passages || []).map((passage, i) => `
-                <span style="color: #ff6b6b; font-weight: bold">Passage ${i + 1}:</span>
-                • Similarity Score: ${(data.scores[i] * 100).toFixed(1)}%
-                • Relevance Factors:
-                  - Semantic overlap: ${(data.scores[i] * 0.9 * 100).toFixed(1)}%
-                  - Context coherence: ${(data.scores[i] * 0.85 * 100).toFixed(1)}%
-                  - Topic alignment: ${(data.scores[i] * 0.95 * 100).toFixed(1)}%
-                
-                Passage Content:
-                "${passage}"
-                
-                Key Terms Matched:
-                ${passage.split(' ').slice(0,3).map(term => `• "${term}"`).join('\\n')}`).join('\\n\\n')}
-                
-                **Retrieval Method:**
-                1. Computed cosine similarity between query and document vectors
-                2. Ranked passages by overall relevance score
-                3. Applied context window adjustment
-                4. Filtered for content diversity
-                
-                **Impact on Answer Generation:**
-                • These passages provide key context for answer synthesis
-                • Higher similarity scores indicate stronger relevance
-                • Multiple passages enable comprehensive coverage
-            `
+<strong>Top Matches (Expanded):</strong><br>
+${data.passages.map((passage, i) => `<br><span style="color:red;font-weight:bold;">Match ${i + 1} (similarity: ${(data.scores[i]*100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>')}
+            `.trim()
         },
         generate: {
             title: "Answer Generation",
             icon: '🤖',
-            description: "GPT processes the retrieved passages to generate a comprehensive answer to your query.",
+            description: "<strong>Step 7: Shaping the Final Answer</strong><br>This is where GPT comes in. We feed the question and the top matching text chunks to GPT. By combining your query’s intention with context from your own data, GPT crafts a targeted answer. It’s the perfect union of clarity and fluency.",
+            summaryDataExplanation: (data) => `
+<strong>Answer (Summary):</strong><br>
+${data.answer.substring(0, Math.floor(data.answer.length/2))}...
+            `.trim(),
             dataExplanation: (data) => `
-                Generated answer based on the retrieved context:
-                
-                ${data.answer}
-            `
+<strong>Answer (Expanded):</strong><br>
+${data.answer}
+            `.trim()
         }
     };
     
-    const ArrowIcon = () => (
-        React.createElement('div', { className: 'pipeline-arrow' },
-            React.createElement('div', { className: 'arrow-body' })
-        )
-    );
-    
     const RAGFlowVertical = () => {
         const [activeStage, setActiveStage] = useState(args.currentStage || null);
-        const [modalContent, setModalContent] = useState(null);
         const [showModal, setShowModal] = useState(false);
         const [selectedStage, setSelectedStage] = useState(null);
-        const [stageData, setStageData] = useState(args.stageData || {});
         
         useEffect(() => {
             setActiveStage(args.currentStage);
-            setStageData(args.stageData || {});
-            
-            // Smooth scroll to active stage
-            if (args.currentStage) {
-                const activeElement = document.querySelector('.active-stage');
-                if (activeElement) {
-                    setTimeout(() => {
-                        activeElement.scrollIntoView({
-                            behavior: 'smooth',
-                            block: 'center'
-                        });
-                    }, 100);
-                }
+        }, [args.currentStage]);
+        
+        useEffect(() => {
+            const activeElem = document.querySelector('.active-stage');
+            if (activeElem) {
+                activeElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
-        }, [args.currentStage, args.stageData]);
-
+        }, [activeStage]);
+        
+        const formatModalContent = (stage) => {
+            const data = args.stageData[stage];
+            if (!data) return 'No data available for this stage.';
+            const process = ProcessExplanation[stage];
+            return React.createElement('div', { className: 'modal-content' }, [
+                React.createElement('button', { className: 'close-button', onClick: () => setShowModal(false) }, '×'),
+                React.createElement('h2', { className: 'modal-title' }, [ process.icon, ' ', process.title ]),
+                React.createElement('p', { className: 'modal-description', dangerouslySetInnerHTML: { __html: process.description } }),
+                React.createElement('div', { className: 'modal-data', dangerouslySetInnerHTML: { __html: process.dataExplanation(data) } })
+            ]);
+        };
+        
+        const ArrowIcon = () => (
+            React.createElement('div', { className: 'pipeline-arrow' },
+                React.createElement('div', { className: 'arrow-body' })
+            )
+        );
+        
         const pipelineStages = Object.keys(ProcessExplanation).map(id => ({
             id,
             ...ProcessExplanation[id]
         }));
         
-        const getStageIndex = (stage) => {
-            return pipelineStages.findIndex(s => s.id === stage);
-        };
-
-        const isStageComplete = (stage) => {
-            const currentIndex = getStageIndex(activeStage);
-            const stageIndex = getStageIndex(stage);
-            return stageIndex < currentIndex;
-        };
-
-        function formatData(stage, data) {
-            if (!data) return 'Waiting for data...';
-            const process = ProcessExplanation[stage];
-            return process ? process.dataExplanation(data) : JSON.stringify(data, null, 2);
-        }
-        
-        function formatModalContent(stage) {
-            const data = stageData[stage];
-            if (!data) return 'No data available for this stage.';
-            
-            const process = ProcessExplanation[stage];
-            return React.createElement('div', { className: 'modal-content' }, [
-                React.createElement('h2', { className: 'modal-title' }, [
-                    process.icon,
-                    ' ',
-                    process.title
-                ]),
-                React.createElement('p', { className: 'modal-description' }, 
-                    process.description
-                ),
-                React.createElement('div', { className: 'modal-data' }, 
-                    React.createElement('pre', null, formatData(stage, data))
-                )
-            ]);
-        }
-        
-        function openModal(stage) {
-            setSelectedStage(stage);
-            setShowModal(true);
-        }
-        
-        function closeModal() {
-            setSelectedStage(null);
-            setShowModal(false);
-        }
+        const getStageIndex = (stage) => pipelineStages.findIndex(s => s.id === stage);
+        const isStageComplete = (stage) => getStageIndex(stage) < getStageIndex(activeStage);
+        const stageData = args.stageData || {};
         
         return React.createElement('div', { className: 'pipeline-container' },
             showModal && React.createElement('div', { className: 'tooltip-modal' },
                 React.createElement('div', { className: 'tooltip-content' },
-                    React.createElement('button', { 
-                        className: 'close-button',
-                        onClick: closeModal 
-                    }, 'Close'),
                     formatModalContent(selectedStage)
                 )
             ),
             React.createElement('div', { className: 'pipeline-column' },
                 pipelineStages.map((stageObj, index) => {
-                    const dataObj = stageData[stageObj.id] || null;
+                    const dataObj = args.stageData[stageObj.id] || null;
                     const isActive = (activeStage === stageObj.id && dataObj);
                     const isComplete = isStageComplete(stageObj.id);
                     const process = ProcessExplanation[stageObj.id];
@@ -461,300 +404,70 @@ def get_pipeline_component(component_args):
                     return React.createElement(React.Fragment, { key: stageObj.id }, [
                         React.createElement('div', { 
                             className: stageClass,
-                            onClick: () => openModal(stageObj.id),
+                            onClick: () => { setSelectedStage(stageObj.id); setShowModal(true); },
                             key: 'box'
                         }, [
-                            React.createElement('div', { 
-                                className: 'stage-header',
-                                key: 'header'
-                            }, [
-                                React.createElement('span', { 
-                                    className: 'stage-icon',
-                                    key: 'icon'
-                                }, process.icon),
-                                React.createElement('span', { 
-                                    className: 'stage-title',
-                                    key: 'title'
-                                }, process.title)
+                            React.createElement('div', { className: 'stage-header', key: 'header' }, [
+                                React.createElement('span', { className: 'stage-icon', key: 'icon' }, process.icon),
+                                React.createElement('span', { className: 'stage-title', key: 'title' }, process.title)
                             ]),
-                            React.createElement('div', { 
-                                className: 'stage-description',
-                                key: 'desc'
-                            }, process.description),
+                            React.createElement('div', { className: 'stage-description', key: 'desc', dangerouslySetInnerHTML: { __html: process.description } }),
                             dataObj && React.createElement('div', { 
-                                className: 'stage-data',
-                                key: 'data'
-                            }, formatData(stageObj.id, dataObj))
+                                className: 'stage-data', 
+                                key: 'data', 
+                                dangerouslySetInnerHTML: { __html: (process.summaryDataExplanation ? process.summaryDataExplanation(dataObj) : process.dataExplanation(dataObj)) } 
+                            })
                         ]),
-                        index < pipelineStages.length - 1 && 
-                        React.createElement(ArrowIcon, { key: 'arrow' })
+                        index < pipelineStages.length - 1 && React.createElement(ArrowIcon, { key: 'arrow' })
                     ]);
                 })
             )
         );
     };
     
-    // Initialize the component
     ReactDOM.render(
         React.createElement(RAGFlowVertical),
         document.getElementById('rag-root')
     );
-    
-    // Re-render on data updates
-    window.updatePipelineData = function(newData) {
-        ReactDOM.render(
-            React.createElement(RAGFlowVertical, newData),
-            document.getElementById('rag-root')
-        );
-    };
-
-    """
-
-    css_styles = """
-    const styles = `
-        @keyframes fadeInGreen {
-            0% { background-color: #1a1a1a; }
-            50% { background-color: rgba(34, 197, 94, 0.2); }
-            100% { background-color: rgba(34, 197, 94, 0.1); }
-        }
-        
-        body {
-            background-color: #111;
-            color: #fff;
-            margin: 0;
-            padding: 0;
-        }
-        .pipeline-container {
-            padding: 1rem;
-            overflow-y: auto;
-            max-height: 100vh;
-            scrollbar-width: thin;
-            scrollbar-color: #4B5563 #1a1a1a;
-        }
-        .pipeline-container::-webkit-scrollbar {
-            width: 8px;
-        }
-        .pipeline-container::-webkit-scrollbar-track {
-            background: #1a1a1a;
-        }
-        .pipeline-container::-webkit-scrollbar-thumb {
-            background-color: #4B5563;
-            border-radius: 4px;
-        }
-        .pipeline-container::-webkit-scrollbar-thumb:hover {
-            background-color: #6B7280;
-        }
-        #rag-root {
-            font-family: system-ui, sans-serif;
-            color: white;
-            height: 100%;
-        }
-        .pipeline-column {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            margin: 0.5rem auto;
-            width: 95%;
-            max-width: 1200px;
-        }
-        .pipeline-box {
-            width: 100%;
-            margin: 0 auto 1rem;
-            padding: 1.5rem;
-            border: 2px solid #4B5563;
-            border-radius: 0.75rem;
-            position: relative;
-            transition: all 0.3s;
-            background-color: #1a1a1a;
-            cursor: pointer;
-        }
-        .pipeline-box:hover {
-            transform: scale(1.02);
-            border-color: #6B7280;
-        }
-        .completed-stage {
-            background-color: rgba(34, 197, 94, 0.1);
-            border-color: #22C55E;
-        }
-        .stage-header {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            margin-bottom: 0.75rem;
-        }
-        .stage-icon {
-            font-size: 1.5rem;
-        }
-        .stage-title {
-            font-weight: bold;
-            font-size: 1.2rem;
-            color: white;
-        }
-        .stage-description {
-            color: #9CA3AF;
-            font-size: 1rem;
-            margin-bottom: 1rem;
-            line-height: 1.5;
-        }
-        .stage-data {
-            font-family: monospace;
-            font-size: 0.9rem;
-            color: #D1D5DB;
-            background-color: rgba(0, 0, 0, 0.2);
-            padding: 1rem;
-            border-radius: 0.5rem;
-            margin-top: 0.75rem;
-            white-space: pre-wrap;
-            overflow-x: auto;
-            text-align: left;
-        }
-        .stage-data strong {
-            color: #e5e7eb;
-            font-weight: bold;
-        }
-        .completed-stage {
-            animation: fadeInGreen 1s forwards;
-        }
-        .active-stage {
-            border-color: #22C55E;
-            box-shadow: 0 0 15px rgba(34, 197, 94, 0.2);
-        }
-        .pipeline-arrow {
-            height: 40px;
-            position: relative;
-            margin: 0.5rem 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .arrow-body {
-            width: 3px;
-            height: 100%;
-            background: linear-gradient(to bottom, 
-                rgba(156, 163, 175, 0) 0%,
-                rgba(156, 163, 175, 1) 30%,
-                rgba(156, 163, 175, 1) 70%,
-                rgba(156, 163, 175, 0) 100%
-            );
-            position: relative;
-        }
-        .arrow-body::after {
-            content: '';
-            position: absolute;
-            bottom: 30%;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 0;
-            height: 0;
-            border-left: 8px solid transparent;
-            border-right: 8px solid transparent;
-            border-top: 12px solid #9CA3AF;
-        }
-        .tooltip-modal {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.8);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
-        }
-        .tooltip-content {
-            background: #1a1a1a;
-            padding: 2rem;
-            border-radius: 1rem;
-            width: 90%;
-            max-width: 800px;
-            max-height: 90vh;
-            overflow-y: auto;
-            color: #fff;
-            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
-        }
-        .tooltip-content::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        .tooltip-content::-webkit-scrollbar-track {
-            background: #333;
-            border-radius: 4px;
-        }
-        .tooltip-content::-webkit-scrollbar-thumb {
-            background: #666;
-            border-radius: 4px;
-        }
-        .tooltip-content::-webkit-scrollbar-thumb:hover {
-            background: #888;
-        }
-        .close-button {
-            background: #dc2626;
-            border: none;
-            padding: 0.75rem 1.5rem;
-            border-radius: 0.5rem;
-            cursor: pointer;
-            margin-bottom: 1.5rem;
-            font-weight: bold;
-            color: white;
-            transition: background-color 0.3s;
-        }
-        .close-button:hover {
-            background: #ef4444;
-        }
-        .modal-title {
-            font-size: 1.5rem;
-            font-weight: bold;
-            margin-bottom: 1rem;
-            color: white;
-        }
-        .modal-description {
-            color: #9CA3AF;
-            font-size: 1.1rem;
-            margin-bottom: 1.5rem;
-            line-height: 1.6;
-        }
-        .modal-data {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 1.5rem;
-            border-radius: 0.75rem;
-            margin-top: 1rem;
-        }
-        .modal-data pre {
-            margin: 0;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            color: #D1D5DB;
-            font-family: monospace;
-            font-size: 0.9rem;
-            line-height: 1.5;
-        }
-        .completed-stage .stage-description {
-            color: rgba(156, 163, 175, 0.8);
-        }
-    `;
-    
-    const styleSheet = document.createElement('style');
-    styleSheet.textContent = styles;
-    document.head.appendChild(styleSheet);
     </script>
     """
-
-    # Combine everything
-    import json
-    complete_template = (
-        html_template +
-        js_code.replace('COMPONENT_ARGS_PLACEHOLDER', json.dumps(component_args)) +
-        css_styles
-    )
-    
+    css_styles = """
+    <style>
+        /* Hide inner scrollbar */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        body { background-color: #111; color: #fff; margin: 0; padding: 0; }
+        #rag-root { font-family: system-ui, sans-serif; height: 100%; width: 100%; margin: 0; padding: 0; }
+        .pipeline-container { padding: 1rem; overflow-y: auto; height: 100vh; box-sizing: border-box; width: 100%; }
+        .pipeline-column { display: flex; flex-direction: column; align-items: stretch; margin: 0 auto; width: 95%; padding-right: 2rem; }
+        .pipeline-box { width: 100%; margin-bottom: 1rem; padding: 1.5rem; border: 2px solid #4B5563; border-radius: 0.75rem; background-color: #1a1a1a; cursor: pointer; transition: all 0.3s; text-align: left; }
+        .pipeline-box:hover { transform: scale(1.02); border-color: #6B7280; }
+        .completed-stage { background-color: rgba(34, 197, 94, 0.1); border-color: #22C55E; }
+        .active-stage { border-color: #22C55E; box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); }
+        .stage-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+        .stage-icon { font-size: 1.5rem; }
+        .stage-title { font-weight: bold; font-size: 1.2rem; color: white; }
+        .stage-description { color: #9CA3AF; font-size: 1rem; margin-bottom: 1rem; line-height: 1.5; text-align: left; }
+        .stage-data { font-family: monospace; font-size: 0.9rem; color: #D1D5DB; background-color: rgba(0, 0, 0, 0.2); padding: 0.75rem; border-radius: 0.5rem; margin-top: 0.75rem; white-space: pre-wrap; text-align: left; }
+        .pipeline-arrow { height: 40px; margin: 0.5rem 0; display: flex; align-items: center; justify-content: center; position: relative; }
+        .arrow-body { width: 3px; height: 100%; background: linear-gradient(to bottom, rgba(156,163,175,0) 0%, rgba(156,163,175,1) 30%, rgba(156,163,175,1) 70%, rgba(156,163,175,0) 100%); position: relative; }
+        .arrow-body::after { content: ''; position: absolute; bottom: 30%; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 12px solid #9CA3AF; }
+        .tooltip-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+        .tooltip-content { position: relative; width: 95%; height: 95%; background: #1a1a1a; padding: 2rem; border-radius: 1rem; overflow-y: auto; box-shadow: 0 0 30px rgba(0,0,0,0.5); color: #fff; }
+        .tooltip-content::-webkit-scrollbar { width: 8px; height: 8px; }
+        .tooltip-content::-webkit-scrollbar-track { background: #333; border-radius: 4px; }
+        .tooltip-content::-webkit-scrollbar-thumb { background: #666; border-radius: 4px; }
+        .tooltip-content::-webkit-scrollbar-thumb:hover { background: #888; }
+        .close-button { position: absolute; top: 20px; right: 20px; background: transparent; border: none; font-size: 2rem; font-weight: bold; color: #fff; cursor: pointer; }
+        .modal-title { font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem; color: white; }
+        .modal-description { color: #9CA3AF; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6; }
+        .modal-data { background: rgba(0, 0, 0, 0.3); padding: 1.5rem; border-radius: 0.75rem; margin-top: 1rem; }
+    </style>
+    """
+    js_code = js_code.replace("COMPONENT_ARGS_PLACEHOLDER", json.dumps(component_args, ensure_ascii=False))
+    complete_template = html_template + js_code + css_styles
     return complete_template
 
-
 def create_or_load_collection(collection_name: str):
-    """
-    Creates or loads a Chroma collection, storing it in session_state
-    """
     if collection_name in st.session_state:
         return st.session_state[collection_name]
     try:
@@ -768,9 +481,6 @@ def add_to_chroma_collection(collection_name: str,
                              chunks: List[str],
                              metadatas: List[dict],
                              ids: List[str]):
-    """
-    'store' step: embed, then store
-    """
     embeddings = embed_text(chunks)
     collection = create_or_load_collection(collection_name)
     collection.add(
@@ -786,22 +496,27 @@ def add_to_chroma_collection(collection_name: str,
     })
 
 def query_collection(query: str, collection_name: str, n_results: int = 3):
-    """
-    'query' step -> 'retrieve' step
-    """
-    update_stage('query', {'query': query})
-
     collection = create_or_load_collection(collection_name)
     doc_count = len(collection.get().get("ids", []))
     if doc_count == 0:
         st.warning("No documents found in the collection. Please upload a document first.")
         return [], []
-
-    query_embedding = embed_text([query])
-    results = collection.query(query_embeddings=query_embedding, n_results=n_results)
+    
+    # Compute the query embedding and get full data details
+    query_embedding_data = embed_text([query], update_stage_flag=False, return_data=True)
+    
+    # Attach the original query text to the data object
+    query_embedding_data['query'] = query
+    
+    # Update the query stage with the complete embedding data
+    update_stage('query', query_embedding_data)
+    
+    # Use the embeddings from the returned data for the query
+    results = collection.query(query_embeddings=query_embedding_data["embeddings"], n_results=n_results)
+    
     retrieved_passages = results.get("documents", [[]])[0]
     retrieved_metadata = results.get("metadatas", [[]])[0]
-
+    
     update_stage('retrieve', {'passages': retrieved_passages, 'metadata': retrieved_metadata})
     return retrieved_passages, retrieved_metadata
 
@@ -812,9 +527,6 @@ def generate_answer_with_gpt(query: str,
                                  "You are a helpful legal assistant. Answer the following query based ONLY on the provided context. "
                                  "Your answer must begin with a TL;DR summary in bullet points. Then a detailed explanation."
                              )):
-    """
-    'generate' step
-    """
     context_text = "\n\n".join(retrieved_passages)
     final_prompt = (
         f"{system_instruction}\n\n"
@@ -837,138 +549,66 @@ def generate_answer_with_gpt(query: str,
 def main():
     st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
     
-    # Initialize session state
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
-        st.session_state.current_stage = None
-        st.session_state.upload_data = None
-        st.session_state.chunk_data = None
-        st.session_state.embed_data = None
-        st.session_state.store_data = None
-        st.session_state.query_data = None
-        st.session_state.retrieve_data = None
-        st.session_state.generate_data = None
-
-    # Set custom Streamlit styles
     st.markdown("""
         <style>
-        .main {
-            padding: 2rem;
-        }
-        .stApp {
-            background-color: #111;
-            color: white;
-        }
-        [data-testid="column"]:first-child {
-            flex: 0 0 33.33% !important;
-            width: 33.33% !important;
-            max-width: 33.33% !important;
-            min-width: 33.33% !important;
-        }
-        [data-testid="column"]:last-child {
-            flex: 0 0 66.67% !important;
-            width: 66.67% !important;
-            max-width: 66.67% !important;
-            min-width: 66.67% !important;
-        }
-        .element-container {
-            margin-bottom: 0 !important;
-        }
-        .stMarkdown {
-            margin-bottom: 0 !important;
-        }
-        iframe {
-            border: none !important;
-            background: transparent !important;
-        }
+        .main { padding: 2rem; }
+        .stApp { background-color: #111; color: white; }
+        [data-testid="column"] { width: calc(100% + 2rem); margin-left: -1rem; }
+        [data-testid="column"]:first-child { width: 33.33%; padding-right: 2rem; }
+        [data-testid="column"]:last-child { width: 66.67%; }
         </style>
     """, unsafe_allow_html=True)
     
     st.title("RAG Pipeline Demo")
-
-    # Sidebar configuration
     st.sidebar.header("Configuration")
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
         set_openai_api_key(api_key)
 
-    # Create columns with specific ratios
     col1, col2 = st.columns([1, 2])
-
     with col1:
         st.header("Document and Query Input")
         option = st.selectbox("Select Operation", ["Upload & Process Document", "Query Collection", "Generate Answer"])
-
         if option == "Upload & Process Document":
-            uploaded_file = st.file_uploader("Upload a text file", type=["txt"], key="file_uploader")
+            uploaded_file = st.file_uploader("Upload a text file", type=["txt"])
             if uploaded_file is not None:
-                try:
-                    text = uploaded_file.read().decode("utf-8")
-                    chunks = split_text_into_chunks(text)
-                    metadatas = [{"source": "uploaded_document"} for _ in chunks]
-                    ids = [str(uuid.uuid4()) for _ in chunks]
-                    add_to_chroma_collection("demo_collection", chunks, metadatas, ids)
-                    st.success("Document processed and stored.")
-                except Exception as e:
-                    st.error(f"Error processing document: {str(e)}")
-
+                text = uploaded_file.read().decode("utf-8")
+                chunks = split_text_into_chunks(text)
+                metadatas = [{"source": "uploaded_document"} for _ in chunks]
+                ids = [str(uuid.uuid4()) for _ in chunks]
+                add_to_chroma_collection("demo_collection", chunks, metadatas, ids)
+                st.success("Document processed and stored.")
         elif option == "Query Collection":
-            query = st.text_input("Enter your query", key="query_input")
-            if st.button("Query", key="query_button"):
-                try:
-                    passages, metadata = query_collection(query, "demo_collection")
-                    st.subheader("Retrieved Passages:")
-                    if passages:
-                        for passage in passages:
-                            st.write(passage)
-                    else:
-                        st.info("No relevant passages found.")
-                except Exception as e:
-                    st.error(f"Error querying collection: {str(e)}")
-
+            query = st.text_input("Enter your query")
+            if st.button("Query"):
+                passages, metadata = query_collection(query, "demo_collection")
+                st.subheader("Retrieved Passages:")
+                if passages:
+                    for passage in passages:
+                        st.write(passage)
+                else:
+                    st.info("No relevant passages found.")
         elif option == "Generate Answer":
-            query = st.text_input("Enter your query for answer generation", key="generate_input")
-            if st.button("Generate", key="generate_button"):
-                try:
-                    passages, metadata = query_collection(query, "demo_collection")
-                    answer = generate_answer_with_gpt(query, passages, metadata)
-                    st.subheader("Generated Answer:")
-                    st.write(answer)
-                except Exception as e:
-                    st.error(f"Error generating answer: {str(e)}")
-
-    # Pipeline visualization column
-    # Pipeline visualization column
+            query = st.text_input("Enter your query for answer generation")
+            if st.button("Generate"):
+                passages, metadata = query_collection(query, "demo_collection")
+                answer = generate_answer_with_gpt(query, passages, metadata)
+                st.subheader("Generated Answer:")
+                st.write(answer)
     with col2:
         st.title("🌀 Pipeline Visualization")
-        
-        # Prepare the component arguments, even if some data is None
         component_args = {
             'currentStage': st.session_state.current_stage,
             'stageData': {
                 stage: st.session_state.get(f'{stage}_data')
                 for stage in ['upload', 'chunk', 'embed', 'store', 'query', 'retrieve', 'generate']
+                if st.session_state.get(f'{stage}_data') is not None
             }
         }
-
-        # Render the pipeline visualization using streamlit components directly
         components.html(
             get_pipeline_component(component_args),
-            height=600,       # Adjust height for immediate visibility
-            scrolling=True    # Allow scrolling within the component if necessary
-        )
-
-        # Optionally, if you wish to have a persistent container using a key,
-        # you can include a static container with a unique key.
-        visualization_key = "pipeline_visualization"
-        st.markdown(f"""
-            <div style="min-height: 600px;" id="{visualization_key}_container"></div>
-        """, unsafe_allow_html=True)
-
-        components.html(
-            get_pipeline_component(component_args),
-            height=600,       # Adjust to a height that fits your UI
-            scrolling=True    # Allow scrolling within the component if necessary
+            height=2000,
+            scrolling=True
         )
 
 if __name__ == "__main__":
