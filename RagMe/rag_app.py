@@ -72,12 +72,8 @@ if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
 # -----------------------------------------------------------------------------
 
 def update_stage(stage: str, data=None):
-    """
-    Update the current stage and store enhanced stage data in session state.
-    """
     st.session_state.current_stage = stage
     if data is not None:
-        # For the embed stage, allow passing a dictionary directly.
         if stage == 'embed' and isinstance(data, dict):
             enhanced_data = data
         else:
@@ -86,7 +82,7 @@ def update_stage(stage: str, data=None):
         if stage == 'upload':
             text = data.get('content', '') if isinstance(data, dict) else data
             enhanced_data['preview'] = text[:600] if text else None
-            enhanced_data['full'] = text  # Store full content for expanded view.
+            enhanced_data['full'] = text
 
         elif stage == 'chunk':
             enhanced_data = {
@@ -98,7 +94,8 @@ def update_stage(stage: str, data=None):
             enhanced_data['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S')
 
         elif stage == 'query':
-            enhanced_data = {'query': data.get('query')}
+            # Preserve all the keys provided for the query stage.
+            enhanced_data = data.copy() if isinstance(data, dict) else {'query': data}
 
         elif stage == 'retrieve':
             if isinstance(data, dict):
@@ -161,23 +158,23 @@ def sanitize_text(text: str) -> str:
     ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
     return ascii_text
 
-def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3-large", update_stage_flag=True):
-    """
-    Generate vector embeddings for a list of texts.
-    Each text is sanitized and, for demonstration purposes, a simulated token breakdown is computed.
-    """
+def embed_text(
+    texts: List[str],
+    openai_embedding_model: str = "text-embedding-3-large",
+    update_stage_flag=True,
+    return_data=False
+):
     if new_client is None:
         st.error("OpenAI client not initialized. Please set your API key in the sidebar.")
         st.stop()
-    # Sanitize each text to ensure it contains only ASCII characters.
     safe_texts = [sanitize_text(s) for s in texts]
     response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
     embeddings = [item.embedding for item in response.data]
     
-    # Simulated Token Breakdown:
+    # Compute token breakdown (using simple whitespace tokenization)
     token_breakdowns = []
     for text, embedding in zip(safe_texts, embeddings):
-        tokens = text.split()  # simple tokenization for demo purposes
+        tokens = text.split()
         n_tokens = len(tokens)
         breakdown = []
         if n_tokens > 0:
@@ -188,7 +185,7 @@ def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3
                 token_vector = embedding[start:end]
                 breakdown.append({
                     "token": token,
-                    "vector_snippet": token_vector[:10]  # first 10 dims for brevity
+                    "vector_snippet": token_vector[:10]  # first 10 dims for display
                 })
         token_breakdowns.append(breakdown)
     
@@ -199,9 +196,11 @@ def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3
         "total_vectors": len(embeddings),
         "token_breakdowns": token_breakdowns
     }
-    # Only update the "embed" stage if desired (e.g. for the file, not for the query)
+    
     if update_stage_flag:
         update_stage('embed', embedding_data)
+    if return_data:
+        return embedding_data
     return embeddings
 
 def get_pipeline_component(component_args):
@@ -288,19 +287,33 @@ Stored ${data.count} chunks in the collection "${data.collection}".
             `.trim()
         },
         query: {
-    title: "Query Processing",
+    title: "Query Vectorization",
     icon: '❓',
     description: "<strong>Step 5: Converting Your Question into a Vector</strong><br>When you ask a question, we convert your query into a vector. This ensures that your question is represented in the same high-dimensional space as your document embeddings, enabling precise comparisons.",
+    // Use the same formatting for both summary and expanded views:
     summaryDataExplanation: (data) => `
-<strong>Query Vectorization (Summary):</strong><br>
-Original Query: <span style="color:red;font-weight:bold;">"${data.query}"</span><br>
-Vectorized: [0.0123, -0.0345, 0.0789, ...]
+<strong>Query Vectorization:</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
+Each query is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Vectors: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims):</strong><br>
+${ data.preview ? data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") : "N/A" }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns ? data.token_breakdowns.map((chunk) => {
+    return chunk.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]`).join("");
+}).join("") : "N/A" }
     `.trim(),
     dataExplanation: (data) => `
-<strong>Query Vectorization (Expanded):</strong><br>
-Original Query: <span style="color:red;font-weight:bold;">"${data.query}"</span><br>
-Vectorized Representation: [0.0123, -0.0345, 0.0789, ...]<br>
-(Additional vector details can be shown here if available)
+<strong>Query Vectorization:</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
+Each query is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Vectors: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims):</strong><br>
+${ data.preview ? data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") : "N/A" }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns ? data.token_breakdowns.map((chunk) => {
+    return chunk.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]`).join("");
+}).join("") : "N/A" }
     `.trim()
 },
         retrieve: {
@@ -483,17 +496,27 @@ def add_to_chroma_collection(collection_name: str,
     })
 
 def query_collection(query: str, collection_name: str, n_results: int = 3):
-    update_stage('query', {'query': query})
     collection = create_or_load_collection(collection_name)
     doc_count = len(collection.get().get("ids", []))
     if doc_count == 0:
         st.warning("No documents found in the collection. Please upload a document first.")
         return [], []
-    # Compute the query embedding but do not update the "embed" stage:
-    query_embedding = embed_text([query], update_stage_flag=False)
-    results = collection.query(query_embeddings=query_embedding, n_results=n_results)
+    
+    # Compute the query embedding and get full data details
+    query_embedding_data = embed_text([query], update_stage_flag=False, return_data=True)
+    
+    # Attach the original query text to the data object
+    query_embedding_data['query'] = query
+    
+    # Update the query stage with the complete embedding data
+    update_stage('query', query_embedding_data)
+    
+    # Use the embeddings from the returned data for the query
+    results = collection.query(query_embeddings=query_embedding_data["embeddings"], n_results=n_results)
+    
     retrieved_passages = results.get("documents", [[]])[0]
     retrieved_metadata = results.get("metadatas", [[]])[0]
+    
     update_stage('retrieve', {'passages': retrieved_passages, 'metadata': retrieved_metadata})
     return retrieved_passages, retrieved_metadata
 
