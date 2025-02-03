@@ -464,36 +464,194 @@ ${ data.answer || "No answer available." }
     </script>
     """
     css_styles = """
-    <style>
-        ::-webkit-scrollbar { width: 0px; background: transparent; }
-        body { background-color: #111; color: #fff; margin: 0; padding: 0; }
-        #rag-root { font-family: system-ui, sans-serif; height: 100%; width: 100%; margin: 0; padding: 0; }
-        .pipeline-container { padding: 1rem; overflow-y: auto; overflow-x: visible; height: 100vh; box-sizing: border-box; width: 100%; }
-        .pipeline-column { display: flex; flex-direction: column; align-items: stretch; margin: 0 auto; width: 95%; padding-right: 2rem; overflow-x: visible; }
-        .pipeline-box { width: 100%; margin-bottom: 1rem; padding: 1.5rem; border: 2px solid #4B5563; border-radius: 0.75rem; background-color: #1a1a1a; cursor: pointer; transition: all 0.3s; text-align: left; transform-origin: center; }
-        .pipeline-box:hover { transform: scale(1.02); border-color: #6B7280; }
-        .completed-stage { background-color: rgba(34, 197, 94, 0.1); border-color: #22C55E; }
-        .active-stage { border-color: #22C55E; box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); }
-        .stage-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
-        .stage-icon { font-size: 1.5rem; }
-        .stage-title { font-weight: bold; font-size: 1.2rem; color: white; }
-        .stage-description { color: #9CA3AF; font-size: 1rem; margin-bottom: 1rem; line-height: 1.5; text-align: left; }
-        .stage-data { font-family: monospace; font-size: 0.9rem; color: #D1D5DB; background-color: rgba(0, 0, 0, 0.2); padding: 0.75rem; border-radius: 0.5rem; margin-top: 0.75rem; white-space: pre-wrap; text-align: left; }
-        .pipeline-arrow { height: 40px; margin: 0.5rem 0; display: flex; align-items: center; justify-content: center; position: relative; }
-        .arrow-body { width: 3px; height: 100%; background: linear-gradient(to bottom, rgba(156,163,175,0) 0%, rgba(156,163,175,1) 30%, rgba(156,163,175,1) 70%, rgba(156,163,175,0) 100%); position: relative; }
-        .arrow-body::after { content: ''; position: absolute; bottom: 30%; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 12px solid #9CA3AF; }
-        .tooltip-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 9999; }
-        .tooltip-content { position: relative; width: 95%; height: 95%; background: #1a1a1a; padding: 2rem; border-radius: 1rem; overflow-y: auto; box-shadow: 0 0 30px rgba(0,0,0,0.5); color: #fff; }
-        .tooltip-content::-webkit-scrollbar { width: 8px; height: 8px; }
-        .tooltip-content::-webkit-scrollbar-track { background: #333; border-radius: 4px; }
-        .tooltip-content::-webkit-scrollbar-thumb { background: #666; border-radius: 4px; }
-        .tooltip-content::-webkit-scrollbar-thumb:hover { background: #888; }
-        .close-button { position: absolute; top: 20px; right: 20px; background: transparent; border: none; font-size: 2rem; font-weight: bold; color: #fff; cursor: pointer; }
-        .modal-title { font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem; color: white; }
-        .modal-description { color: #9CA3AF; font-size: 1.1rem; margin-bottom: 1.5rem; line-height: 1.6; }
-        .modal-data { background: rgba(0, 0, 0, 0.3); padding: 1.5rem; border-radius: 0.75rem; margin-top: 1rem; }
-    </style>
-    """
+<style>
+  ::-webkit-scrollbar { width: 0px; background: transparent; }
+  body { 
+      background-color: #111; 
+      color: #fff; 
+      margin: 0; 
+      padding: 0; 
+  }
+  #rag-root { 
+      font-family: system-ui, sans-serif; 
+      height: 100%; 
+      width: 100%; 
+      margin: 0; 
+      padding: 0; 
+  }
+  /* Add extra right padding to the container so scaled elements have room */
+  .pipeline-container { 
+      padding: 1rem 10rem 1rem 1rem; 
+      overflow-y: auto; 
+      overflow-x: visible; 
+      height: 100vh; 
+      box-sizing: border-box; 
+      width: 100%; 
+  }
+  /* Also add right padding to the inner column */
+  .pipeline-column { 
+      display: flex; 
+      flex-direction: column; 
+      align-items: stretch; 
+      width: 100%; 
+      margin: 0 auto; 
+      padding-right: 10rem; 
+      overflow-x: visible; 
+  }
+  .pipeline-box { 
+      width: 100%; 
+      margin-bottom: 1rem; 
+      padding: 1.5rem; 
+      border: 2px solid #4B5563; 
+      border-radius: 0.75rem; 
+      background-color: #1a1a1a; 
+      cursor: pointer; 
+      transition: all 0.3s; 
+      text-align: left; 
+      transform-origin: center; 
+      position: relative; 
+      z-index: 1; 
+  }
+  .pipeline-box:hover { 
+      transform: scale(1.02); 
+      border-color: #6B7280; 
+      z-index: 1000; 
+  }
+  .completed-stage { 
+      background-color: rgba(34, 197, 94, 0.1); 
+      border-color: #22C55E; 
+  }
+  .active-stage { 
+      border-color: #22C55E; 
+      box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); 
+  }
+  .stage-header { 
+      display: flex; 
+      align-items: center; 
+      gap: 0.75rem; 
+      margin-bottom: 0.75rem; 
+  }
+  .stage-icon { 
+      font-size: 1.5rem; 
+  }
+  .stage-title { 
+      font-weight: bold; 
+      font-size: 1.2rem; 
+      color: white; 
+  }
+  .stage-description { 
+      color: #9CA3AF; 
+      font-size: 1rem; 
+      margin-bottom: 1rem; 
+      line-height: 1.5; 
+      text-align: left; 
+  }
+  .stage-data { 
+      font-family: monospace; 
+      font-size: 0.9rem; 
+      color: #D1D5DB; 
+      background-color: rgba(0, 0, 0, 0.2); 
+      padding: 0.75rem; 
+      border-radius: 0.5rem; 
+      margin-top: 0.75rem; 
+      white-space: pre-wrap; 
+      text-align: left; 
+  }
+  .pipeline-arrow { 
+      height: 40px; 
+      margin: 0.5rem 0; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      position: relative; 
+  }
+  .arrow-body { 
+      width: 3px; 
+      height: 100%; 
+      background: linear-gradient(to bottom, rgba(156,163,175,0) 0%, rgba(156,163,175,1) 30%, rgba(156,163,175,1) 70%, rgba(156,163,175,0) 100%); 
+      position: relative; 
+  }
+  .arrow-body::after { 
+      content: ''; 
+      position: absolute; 
+      bottom: 30%; 
+      left: 50%; 
+      transform: translateX(-50%); 
+      width: 0; 
+      height: 0; 
+      border-left: 8px solid transparent; 
+      border-right: 8px solid transparent; 
+      border-top: 12px solid #9CA3AF; 
+  }
+  .tooltip-modal { 
+      position: fixed; 
+      top: 0; 
+      left: 0; 
+      width: 100%; 
+      height: 100%; 
+      background-color: rgba(0,0,0,0.85); 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      z-index: 9999; 
+  }
+  .tooltip-content { 
+      position: relative; 
+      width: 95%; 
+      height: 95%; 
+      background: #1a1a1a; 
+      padding: 2rem; 
+      border-radius: 1rem; 
+      overflow-y: auto; 
+      box-shadow: 0 0 30px rgba(0,0,0,0.5); 
+      color: #fff; 
+  }
+  .tooltip-content::-webkit-scrollbar { 
+      width: 8px; 
+      height: 8px; 
+  }
+  .tooltip-content::-webkit-scrollbar-track { 
+      background: #333; 
+      border-radius: 4px; 
+  }
+  .tooltip-content::-webkit-scrollbar-thumb { 
+      background: #666; 
+      border-radius: 4px; 
+  }
+  .tooltip-content::-webkit-scrollbar-thumb:hover { 
+      background: #888; 
+  }
+  .close-button { 
+      position: absolute; 
+      top: 20px; 
+      right: 20px; 
+      background: transparent; 
+      border: none; 
+      font-size: 2rem; 
+      font-weight: bold; 
+      color: #fff; 
+      cursor: pointer; 
+  }
+  .modal-title { 
+      font-size: 1.5rem; 
+      font-weight: bold; 
+      margin-bottom: 1rem; 
+      color: white; 
+  }
+  .modal-description { 
+      color: #9CA3AF; 
+      font-size: 1.1rem; 
+      margin-bottom: 1.5rem; 
+      line-height: 1.6; 
+  }
+  .modal-data { 
+      background: rgba(0, 0, 0, 0.3); 
+      padding: 1.5rem; 
+      border-radius: 0.75rem; 
+      margin-top: 1rem; 
+  }
+</style>
+"""
     js_code = js_code.replace("COMPONENT_ARGS_PLACEHOLDER", json.dumps(component_args))
     complete_template = html_template + js_code + css_styles
     return complete_template
@@ -753,6 +911,7 @@ def get_realtime_html(token_data: dict) -> str:
     </style>
     """
     return realtime_js
+
 
 #######################################################################
 # 8) MAIN STREAMLIT APP
