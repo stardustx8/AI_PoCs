@@ -189,6 +189,52 @@ def embed_text(
         return embedding_data
     return embeddings
 
+@st.cache_data
+def get_rag_context(query: str, collection_name: str, n_results: int = 3):
+    passages, metadata = query_collection(query, collection_name, n_results)
+    return {
+        "relevant_passages": passages,
+        "metadata": metadata
+    }
+
+# Add this route handler in your main() function
+def handle_rag_query():
+    query = st.experimental_get_query_params().get("query", [""])[0]
+    collection = st.experimental_get_query_params().get("collection", ["demo_collection"])[0]
+    
+    if query:
+        context = get_rag_context(query, collection)
+        return {"context": context}
+    return {"error": "No query provided"}
+
+@st.cache_data
+def handle_query_collection():
+    data = st.experimental_get_query_params()
+    query = data.get('query', [''])[0]
+    collection = data.get('collection', ['demo_collection'])[0]
+    
+    passages, metadata = query_collection(query, collection)
+    return {
+        'context': '\n'.join(passages) if passages else 'No relevant context found.'
+    }
+
+def query_collection_endpoint():
+    try:
+        query = st.experimental_get_query_params().get("query", [""])[0]
+        collection = st.experimental_get_query_params().get("collection", ["demo_collection"])[0]
+        
+        passages, metadata = query_collection(query, collection)
+        
+        if passages:
+            return {
+                "relevantContext": "\n".join(passages),
+                "metadata": metadata
+            }
+        return {"relevantContext": None}
+    except Exception as e:
+        st.error(f"Error querying collection: {str(e)}")
+        return {"error": str(e)}
+
 #######################################################################
 # 5) FULL REACT PIPELINE SNIPPET
 #######################################################################
@@ -509,10 +555,19 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
     update_stage('generate', {'answer': answer})
     return answer
 
+def summarize_context(passages: list[str]) -> str:
+    """
+    Optionally create a short summary of your entire doc set,
+    using a quick GPT call or just taking the first N lines.
+    """
+    combined = "\n".join(passages[:3])
+    short_summary = combined[:1000]
+    return f"Summary of your documents:\n{short_summary}"
+
 #######################################################################
 # 7) REALTIME VOICE MODE (FIXED)
 #######################################################################
-def get_ephemeral_token():
+def get_ephemeral_token(collection_name: str = "demo_collection"):
     if "api_key" not in st.session_state:
         st.error("OpenAI API key not set.")
         return None
@@ -533,20 +588,16 @@ def get_ephemeral_token():
         resp.raise_for_status()
         token_data = resp.json()
         
-        # Debug the response structure
-        st.write("Response structure:", token_data)
-        
-        # Return the token directly if it's in the response
         if isinstance(token_data, dict):
             if "token" in token_data:
-                return token_data["token"]
+                return {"token": token_data["token"], "collection": collection_name}
             elif "client_secret" in token_data:
                 if isinstance(token_data["client_secret"], dict):
-                    return token_data["client_secret"].get("value")
-                return token_data["client_secret"]
-                
+                    return {"token": token_data["client_secret"].get("value"), "collection": collection_name}
+                return {"token": token_data["client_secret"], "collection": collection_name}
+        
         st.error("Unexpected response structure")
-        st.json(token_data)  # Display the full response for debugging
+        st.json(token_data)
         return None
         
     except requests.exceptions.RequestException as e:
@@ -555,112 +606,155 @@ def get_ephemeral_token():
             st.write("Error response:", e.response.text)
         return None
 
-def get_realtime_html(ephemeral_token: str) -> str:
+def get_realtime_html(token_data: dict) -> str:
+    """
+    Creates the HTML/JS that sets up the WebRTC connection,
+    calls session.update with a short baseline summary,
+    and then for each user query, does chunk retrieval + response.create
+    with those relevant passages.
+    """
+    coll = create_or_load_collection(token_data['collection'])
+    all_docs = coll.get()
+    all_passages = all_docs.get("documents", [])
+    doc_summary = summarize_context(all_passages)
+
     realtime_js = f"""
-    <div id="realtime-status" style="color: lime; font-size: 20px; margin-bottom: 10px;">Initializing realtime connection...</div>
+    <div id="realtime-status" style="color: lime; font-size: 20px;">Initializing...</div>
     <div id="transcription" style="color: white; margin-top: 10px;"></div>
     <script>
     async function initRealtime() {{
         const statusDiv = document.getElementById('realtime-status');
         const transcriptionDiv = document.getElementById('transcription');
-        statusDiv.innerText = "Starting realtime connection...";
-
         const pc = new RTCPeerConnection();
-        
+        const audioEl = new Audio();
+        audioEl.autoplay = true;
+
         try {{
-            // Set up audio input
             const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
             stream.getTracks().forEach(track => pc.addTrack(track, stream));
             statusDiv.innerText = "Microphone connected!";
         }} catch (err) {{
-            console.error("Microphone error:", err);
-            statusDiv.innerText = "Error accessing microphone: " + err.message;
+            statusDiv.innerText = "Microphone error: " + err.message;
             return;
         }}
 
-        // Set up audio output
-        const audioEl = new Audio();
-        audioEl.autoplay = true;
-        
         pc.ontrack = (event) => {{
             audioEl.srcObject = event.streams[0];
         }};
 
-        // Create data channel
         const dc = pc.createDataChannel("events");
         
         dc.onopen = () => {{
-            console.log("Data channel opened");
-            statusDiv.innerText = "Connected and ready! Start speaking...";
+            statusDiv.innerText = "Connected! Sending baseline session instructions...";
+
+            dc.send(JSON.stringify({{
+                type: "session.update",
+                session: {{
+                    instructions: `{doc_summary}`
+                }}
+            }}));
         }};
 
-        dc.onmessage = (e) => {{
-            try {{
-                const data = JSON.parse(e.data);
-                console.log("Received message:", data);
-                
-                if (data.type === "text") {{
-                    transcriptionDiv.innerHTML += `<p>You: ${{data.text}}</p>`;
-                }} else if (data.type === "speech") {{
-                    transcriptionDiv.innerHTML += `<p style="color: #4CAF50;">Assistant: ${{data.text}}</p>`;
+        dc.onmessage = async (e) => {{
+            const data = JSON.parse(e.data);
+            console.log("Received:", data);
+
+            if (data.type === "text") {{
+                const userQuery = data.text;
+                transcriptionDiv.innerHTML += `<p style='color:#9ee;'>User: ${{userQuery}}</p>`;
+
+                dc.send(JSON.stringify({{
+                    type: "conversation.item.create",
+                    item: {{
+                        type: "message",
+                        role: "user",
+                        content: [
+                            {{
+                                type: "input_text",
+                                text: userQuery
+                            }}
+                        ]
+                    }}
+                }}));
+
+                let relevantContext = "";
+                try {{
+                    const response = await fetch('/query_collection', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{
+                            query: userQuery,
+                            collection: "{token_data['collection']}"
+                        }})
+                    }});
+                    const contextData = await response.json();
+                    relevantContext = contextData.relevantContext || "";
+                }} catch (err) {{
+                    console.error('Error retrieving context:', err);
                 }}
-            }} catch (err) {{
-                console.error("Error processing message:", err);
+
+                dc.send(JSON.stringify({{
+                    type: "response.create",
+                    response: {{
+                        modalities: ["audio", "text"],
+                        instructions: `You are a helpful assistant. 
+                                       Here are the best-matching doc passages for the last user query:
+                                       ${{relevantContext}}
+                                       Please answer carefully using *only* that info.`
+                    }}
+                }}));
+            }} 
+            else if (data.type === "speech") {{
+                transcriptionDiv.innerHTML += 
+                  `<p style="color: #4CAF50;">Assistant: ${{data.text}}</p>`;
             }}
         }};
 
-        // Create and send offer
         try {{
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            const sdpResponse = await fetch(`https://api.openai.com/v1/realtime`, {{
+            const sdpResponse = await fetch("https://api.openai.com/v1/realtime", {{
                 method: "POST",
                 body: offer.sdp,
                 headers: {{
-                    "Authorization": `Bearer ${{"{ephemeral_token}"}}`,
+                    "Authorization": "Bearer {token_data['token']}",
                     "Content-Type": "application/sdp"
                 }}
             }});
 
-            if (!sdpResponse.ok) {{
-                throw new Error(`HTTP error! status: ${{sdpResponse.status}}`);
-            }}
+            if (!sdpResponse.ok) throw new Error(`HTTP error: ${{sdpResponse.status}}`);
 
             const answerSdp = await sdpResponse.text();
             await pc.setRemoteDescription({{ type: "answer", sdp: answerSdp }});
-            
-            console.log("WebRTC connection established");
-            statusDiv.innerText = "Connected! Start speaking...";
         }} catch (err) {{
-            console.error("Connection error:", err);
             statusDiv.innerText = "Connection error: " + err.message;
+            console.error(err);
         }}
     }}
 
-    // Start the realtime connection
     initRealtime();
     </script>
     <style>
         body {{
-            background-color: #111;
-            color: #fff;
-            font-family: system-ui, sans-serif;
-            margin: 0; 
-            padding: 1rem;
+          background-color: #111; 
+          color: #fff; 
+          font-family: system-ui, sans-serif; 
+          margin: 0; 
+          padding: 1rem; 
         }}
         #transcription {{
-            margin-top: 20px;
-            padding: 10px;
-            background-color: #222;
-            border-radius: 5px;
-            max-height: 400px;
-            overflow-y: auto;
+          margin-top: 20px; 
+          padding: 10px; 
+          background-color: #222; 
+          border-radius: 5px; 
+          max-height: 400px; 
+          overflow-y: auto;
         }}
         #transcription p {{
-            margin: 5px 0;
-            padding: 5px;
-            border-bottom: 1px solid #333;
+          margin: 5px 0; 
+          padding: 5px; 
+          border-bottom: 1px solid #333;
         }}
     </style>
     """
@@ -670,6 +764,7 @@ def get_realtime_html(ephemeral_token: str) -> str:
 # 8) MAIN STREAMLIT APP
 #######################################################################
 def main():
+    # Set page configuration and custom CSS for the layout.
     st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
     st.markdown("""
         <style>
@@ -680,21 +775,24 @@ def main():
         [data-testid="column"]:last-child { width: 66.67%; }
         </style>
     """, unsafe_allow_html=True)
-
-    st.title("RAG Pipeline Demo + Realtime Voice")
-    st.sidebar.header("Configuration")
+    
+    st.title("RAG + Realtime Voice Demo")
+    
+    # (1) Provide API key via the sidebar.
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
         set_openai_api_key(api_key)
-
-    # Voice checkbox
+    
+    # Voice checkbox in sidebar.
     voice_mode = st.sidebar.checkbox("Enable Advanced Voice Interaction", value=False)
-
-    col1, col2 = st.columns([1,2])
-
+    
+    # Define columns using the earlier (working) proportions.
+    col1, col2 = st.columns([1, 2])
+    
     with col1:
         st.header("Document + Query Input")
         operation = st.selectbox("Select Operation", ["Upload & Process Document", "Query Collection", "Generate Answer"])
+        
         if operation == "Upload & Process Document":
             uploaded_file = st.file_uploader("Upload a text file", type=["txt"])
             if uploaded_file is not None:
@@ -704,9 +802,10 @@ def main():
                 ids = [str(uuid.uuid4()) for _ in chunks]
                 add_to_chroma_collection("demo_collection", chunks, metadatas, ids)
                 st.success("Document processed + stored in Chroma!")
+                
         elif operation == "Query Collection":
             query = st.text_input("Enter your query")
-            if st.button("Query"):
+            if st.button("Query", key="query_collection_button"):
                 passages, metadata = query_collection(query, "demo_collection")
                 st.subheader("Retrieved Passages:")
                 if passages:
@@ -714,35 +813,45 @@ def main():
                         st.write(p)
                 else:
                     st.info("No relevant passages found.")
+                    
         elif operation == "Generate Answer":
             query = st.text_input("Enter your question")
-            if st.button("Generate Answer"):
+            if st.button("Generate Answer", key="generate_answer_button"):
                 passages, metadata = query_collection(query, "demo_collection")
                 answer = generate_answer_with_gpt(query, passages, metadata)
                 st.subheader("Answer:")
                 st.write(answer)
 
-        # If voice mode is on, show button to start session
-        # Inside main() function, replace the voice mode section with:
+        # Sidebar button to start voice session.
+        if st.sidebar.button("Start Voice Session", key="sidebar_start_voice"):
+            token_data = get_ephemeral_token("demo_collection")
+            if token_data:
+                st.success("Realtime session initiated from sidebar!")
+                realtime_html = get_realtime_html(token_data)
+                components.html(realtime_html, height=600, scrolling=True)
+            else:
+                st.error("Could not start realtime session. Check errors above.")
+
+        # In-main-column voice mode section.
         if voice_mode:
             st.subheader("Advanced Voice Interaction")
-            st.info("This uses the OpenAI Realtime API for low-latency voice. Mic must be allowed.")
-            if st.button("Start Voice Session"):
-                ephemeral_token = get_ephemeral_token()
-                if ephemeral_token:
-                    st.success("Realtime session initiated! Opening WebRTC panel below...")
-                    realtime_html = get_realtime_html(ephemeral_token)
+            st.info("This uses the OpenAI Realtime API with RAG integration. Mic must be allowed.")
+            if st.button("Start Voice Session", key="col_start_voice"):
+                token_data = get_ephemeral_token()
+                if token_data:
+                    st.success("Realtime session initiated in main column! Opening WebRTC panel below...")
+                    realtime_html = get_realtime_html(token_data)
                     components.html(realtime_html, height=600, scrolling=True)
                 else:
                     st.error("Could not start realtime session. Check the error messages above.")
-
+                    
     with col2:
-        st.title("🌀 Pipeline Visualization")
+        st.header("🌀 Pipeline Visualization")
         component_args = {
             "currentStage": st.session_state.current_stage,
             "stageData": {
                 s: st.session_state.get(f'{s}_data')
-                for s in ['upload','chunk','embed','store','query','retrieve','generate']
+                for s in ['upload', 'chunk', 'embed', 'store', 'query', 'retrieve', 'generate']
                 if st.session_state.get(f'{s}_data') is not None
             }
         }
