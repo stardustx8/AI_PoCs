@@ -167,8 +167,8 @@ def embed_text(
         if tokens:
             dims_per_token = len(embedding) // len(tokens)
             for i, tok in enumerate(tokens):
-                start = i*dims_per_token
-                end = start + dims_per_token if i < len(tokens)-1 else len(embedding)
+                start = i * dims_per_token
+                end = start + dims_per_token if i < len(tokens) - 1 else len(embedding)
                 snippet = embedding[start:end]
                 breakdown.append({
                     "token": tok,
@@ -197,7 +197,6 @@ def get_rag_context(query: str, collection_name: str, n_results: int = 3):
         "metadata": metadata
     }
 
-# Add this route handler in your main() function
 def handle_rag_query():
     query = st.experimental_get_query_params().get("query", [""])[0]
     collection = st.experimental_get_query_params().get("collection", ["demo_collection"])[0]
@@ -239,9 +238,6 @@ def query_collection_endpoint():
 # 5) FULL REACT PIPELINE SNIPPET
 #######################################################################
 def get_pipeline_component(component_args):
-    """
-    The EXACT snippet from your code, with detailed text for each stage.
-    """
     html_template = """
     <div id="rag-root"></div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
@@ -300,7 +296,7 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
             `.trim(),
             dataExplanation: (data) => `
 <strong>Embedding Stats (Expanded):</strong><br>
-Each segment is a ${data.dimensions}-dimensional vector.<br>
+Each segment is represented by a ${data.dimensions}-dimensional vector.<br>
 Total Embeddings: ${data.total_vectors}<br>
 <strong>Sample Vector Snippet (first 10 dims of the first embedding):</strong><br>
 ${ data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") }<br><br>
@@ -329,19 +325,28 @@ Stored ${data.count} chunks in collection "${data.collection}" at ${data.timesta
             icon: '❓',
             description: "<strong>Step 5: Converting Your Question into a Vector</strong><br>Your query is also turned into a vector so we can measure its similarity to the stored chunks.",
             summaryDataExplanation: (data) => `
-<strong>Query Vector (Summary):</strong><br>
-Original Query: "<span style='color:red;font-weight:bold;'>${data.query}</span>"<br>
+<strong>Query Vectorization:</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
+Each query is represented by a ${data.dimensions}-dimensional vector.<br>
 Total Vectors: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims):</strong><br>
+${ data.preview ? data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") : "N/A" }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns ? data.token_breakdowns.map((chunk) => {
+    return chunk.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]`).join("");
+}).join("") : "N/A" }
             `.trim(),
             dataExplanation: (data) => `
-<strong>Query Vector (Expanded):</strong><br>
-Query: "<span style='color:red;font-weight:bold;'>${data.query}</span>"<br>
-Vector Dimensions: ${data.dimensions}<br>
-${ data.token_breakdowns ? 
-    data.token_breakdowns.map((chunk, idx) => {
-       return chunk.map(item => `<br>${item.token}: [${item.vector_snippet.map(v => v.toFixed(5)).join(", ")}]`).join("");
-     }).join("") 
-   : "No breakdown" }
+<strong>Query Vectorization:</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
+Each query is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Vectors: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims):</strong><br>
+${ data.preview ? data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") : "N/A" }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns ? data.token_breakdowns.map((chunk) => {
+    return chunk.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]`).join("");
+}).join("") : "N/A" }
             `.trim()
         },
         retrieve: {
@@ -377,18 +382,18 @@ ${ data.answer || "No answer available." }
         const [activeStage, setActiveStage] = useState(args.currentStage || null);
         const [showModal, setShowModal] = useState(false);
         const [selectedStage, setSelectedStage] = useState(null);
-
+        
         useEffect(() => {
             setActiveStage(args.currentStage);
         }, [args.currentStage]);
-
+        
         useEffect(() => {
             const activeElem = document.querySelector('.active-stage');
             if (activeElem) {
                 activeElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
         }, [activeStage]);
-
+        
         const formatModalContent = (stage) => {
             const data = args.stageData[stage];
             if (!data) return 'No data available for this stage.';
@@ -400,22 +405,22 @@ ${ data.answer || "No answer available." }
                 React.createElement('div', { className: 'modal-data', dangerouslySetInnerHTML: { __html: process.dataExplanation(data) } })
             ]);
         };
-
+        
         const ArrowIcon = () => (
             React.createElement('div', { className: 'pipeline-arrow' },
                 React.createElement('div', { className: 'arrow-body' })
             )
         );
-
+        
         const pipelineStages = Object.keys(ProcessExplanation).map(id => ({
             id,
             ...ProcessExplanation[id]
         }));
-
+        
         const getStageIndex = (stage) => pipelineStages.findIndex(s => s.id === stage);
         const isStageComplete = (stage) => getStageIndex(stage) < getStageIndex(activeStage);
         const stageData = args.stageData || {};
-
+        
         return React.createElement('div', { className: 'pipeline-container' },
             showModal && React.createElement('div', { className: 'tooltip-modal' },
                 React.createElement('div', { className: 'tooltip-content' },
@@ -424,7 +429,7 @@ ${ data.answer || "No answer available." }
             ),
             React.createElement('div', { className: 'pipeline-column' },
                 pipelineStages.map((stageObj, index) => {
-                    const dataObj = stageData[stageObj.id] || null;
+                    const dataObj = args.stageData[stageObj.id] || null;
                     const isActive = (activeStage === stageObj.id && dataObj);
                     const isComplete = isStageComplete(stageObj.id);
                     const process = ProcessExplanation[stageObj.id];
@@ -451,7 +456,7 @@ ${ data.answer || "No answer available." }
             )
         );
     };
-
+    
     ReactDOM.render(
         React.createElement(RAGFlowVertical),
         document.getElementById('rag-root')
@@ -463,9 +468,9 @@ ${ data.answer || "No answer available." }
         ::-webkit-scrollbar { width: 0px; background: transparent; }
         body { background-color: #111; color: #fff; margin: 0; padding: 0; }
         #rag-root { font-family: system-ui, sans-serif; height: 100%; width: 100%; margin: 0; padding: 0; }
-        .pipeline-container { padding: 1rem; overflow-y: auto; height: 100vh; box-sizing: border-box; width: 100%; }
-        .pipeline-column { display: flex; flex-direction: column; align-items: stretch; margin: 0 auto; width: 95%; padding-right: 2rem; }
-        .pipeline-box { width: 100%; margin-bottom: 1rem; padding: 1.5rem; border: 2px solid #4B5563; border-radius: 0.75rem; background-color: #1a1a1a; cursor: pointer; transition: all 0.3s; text-align: left; }
+        .pipeline-container { padding: 1rem; overflow-y: auto; overflow-x: visible; height: 100vh; box-sizing: border-box; width: 100%; }
+        .pipeline-column { display: flex; flex-direction: column; align-items: stretch; margin: 0 auto; width: 95%; padding-right: 2rem; overflow-x: visible; }
+        .pipeline-box { width: 100%; margin-bottom: 1rem; padding: 1.5rem; border: 2px solid #4B5563; border-radius: 0.75rem; background-color: #1a1a1a; cursor: pointer; transition: all 0.3s; text-align: left; transform-origin: center; }
         .pipeline-box:hover { transform: scale(1.02); border-color: #6B7280; }
         .completed-stage { background-color: rgba(34, 197, 94, 0.1); border-color: #22C55E; }
         .active-stage { border-color: #22C55E; box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); }
@@ -489,8 +494,9 @@ ${ data.answer || "No answer available." }
         .modal-data { background: rgba(0, 0, 0, 0.3); padding: 1.5rem; border-radius: 0.75rem; margin-top: 1rem; }
     </style>
     """
-    js_code = js_code.replace("COMPONENT_ARGS_PLACEHOLDER", json.dumps(component_args, ensure_ascii=False))
-    return html_template + js_code + css_styles
+    js_code = js_code.replace("COMPONENT_ARGS_PLACEHOLDER", json.dumps(component_args))
+    complete_template = html_template + js_code + css_styles
+    return complete_template
 
 #######################################################################
 # 6) CREATE/LOAD COLLECTION, ETC
@@ -556,10 +562,6 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
     return answer
 
 def summarize_context(passages: list[str]) -> str:
-    """
-    Optionally create a short summary of your entire doc set,
-    using a quick GPT call or just taking the first N lines.
-    """
     combined = "\n".join(passages[:3])
     short_summary = combined[:1000]
     return f"Summary of your documents:\n{short_summary}"
@@ -607,12 +609,6 @@ def get_ephemeral_token(collection_name: str = "demo_collection"):
         return None
 
 def get_realtime_html(token_data: dict) -> str:
-    """
-    Creates the HTML/JS that sets up the WebRTC connection,
-    calls session.update with a short baseline summary,
-    and then for each user query, does chunk retrieval + response.create
-    with those relevant passages.
-    """
     coll = create_or_load_collection(token_data['collection'])
     all_docs = coll.get()
     all_passages = all_docs.get("documents", [])
@@ -646,7 +642,6 @@ def get_realtime_html(token_data: dict) -> str:
         
         dc.onopen = () => {{
             statusDiv.innerText = "Connected! Sending baseline session instructions...";
-
             dc.send(JSON.stringify({{
                 type: "session.update",
                 session: {{
@@ -705,8 +700,7 @@ def get_realtime_html(token_data: dict) -> str:
                 }}));
             }} 
             else if (data.type === "speech") {{
-                transcriptionDiv.innerHTML += 
-                  `<p style="color: #4CAF50;">Assistant: ${{data.text}}</p>`;
+                transcriptionDiv.innerHTML += `<p style="color: #4CAF50;">Assistant: ${{data.text}}</p>`;
             }}
         }};
 
@@ -764,8 +758,8 @@ def get_realtime_html(token_data: dict) -> str:
 # 8) MAIN STREAMLIT APP
 #######################################################################
 def main():
-    # Set page configuration and custom CSS for the layout.
     st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
+    
     st.markdown("""
         <style>
         .main { padding: 2rem; }
@@ -786,7 +780,7 @@ def main():
     # Voice checkbox in sidebar.
     voice_mode = st.sidebar.checkbox("Enable Advanced Voice Interaction", value=False)
     
-    # Define columns using the earlier (working) proportions.
+    # Define columns using the earlier working proportions.
     col1, col2 = st.columns([1, 2])
     
     with col1:
