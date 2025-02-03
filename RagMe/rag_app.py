@@ -85,8 +85,8 @@ def update_stage(stage: str, data=None):
 
         if stage == 'upload':
             text = data.get('content', '') if isinstance(data, dict) else data
-            # Show 3x as much as before (600 characters instead of 200)
             enhanced_data['preview'] = text[:600] if text else None
+            enhanced_data['full'] = text  # Store full content for expanded view.
 
         elif stage == 'chunk':
             enhanced_data = {
@@ -161,7 +161,7 @@ def sanitize_text(text: str) -> str:
     ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
     return ascii_text
 
-def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3-large"):
+def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3-large", update_stage_flag=True):
     """
     Generate vector embeddings for a list of texts.
     Each text is sanitized and, for demonstration purposes, a simulated token breakdown is computed.
@@ -174,11 +174,10 @@ def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3
     response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
     embeddings = [item.embedding for item in response.data]
     
-    # **Simulated Token Breakdown:**  
-    # For each text, we split it into tokens (by whitespace) and slice the embedding vector accordingly.
+    # Simulated Token Breakdown:
     token_breakdowns = []
     for text, embedding in zip(safe_texts, embeddings):
-        tokens = text.split()  # simple tokenization; for demo purposes
+        tokens = text.split()  # simple tokenization for demo purposes
         n_tokens = len(tokens)
         breakdown = []
         if n_tokens > 0:
@@ -193,7 +192,6 @@ def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3
                 })
         token_breakdowns.append(breakdown)
     
-    # Pass along a richer dictionary for the embed stage.
     embedding_data = {
         "embeddings": embeddings,
         "dimensions": len(embeddings[0]) if embeddings else 0,
@@ -201,7 +199,9 @@ def embed_text(texts: List[str], openai_embedding_model: str = "text-embedding-3
         "total_vectors": len(embeddings),
         "token_breakdowns": token_breakdowns
     }
-    update_stage('embed', embedding_data)
+    # Only update the "embed" stage if desired (e.g. for the file, not for the query)
+    if update_stage_flag:
+        update_stage('embed', embedding_data)
     return embeddings
 
 def get_pipeline_component(component_args):
@@ -217,46 +217,58 @@ def get_pipeline_component(component_args):
     
     const ProcessExplanation = {
         upload: {
-            title: "Document Upload & Processing",
-            icon: '📁',
-            description: "<strong>Step 1: Gather Your Raw Material</strong><br>We take your text as provided and preview a generous portion of it.",
-            dataExplanation: (data) => `
+        title: "Document Upload & Processing",
+        icon: '📁',
+        description: "<strong>Step 1: Gather Your Raw Material</strong><br>We begin by taking the text exactly as you provided, pulling it into our pipeline, and giving it a brief once-over. This sets the stage for everything to come. It’s the essential first step in transforming your uploaded content into something we can query with intelligence.",
+        summaryDataExplanation: (data) => `
 <strong>Upload Summary:</strong><br>
 Received ~${data.size || 'N/A'} characters.<br>
 <strong>Preview:</strong> "${data.preview || 'No preview available'}"
-            `.trim()
+        `.trim(),
+        dataExplanation: (data) => `
+<strong>Upload Details (Expanded):</strong><br>
+Received ~${data.size || 'N/A'} characters.<br>
+<strong>Full Content:</strong><br>
+${data.full || data.preview || 'No content available.'}
+        `.trim()
         },
         chunk: {
             title: "Text Chunking",
             icon: '✂️',
-            description: "<strong>Step 2: Slicing Content into Digestible Bits</strong><br>Your text is split into smaller pieces for easier processing.",
+            description: "<strong>Step 2: Slicing Content into Digestible Bits</strong><br>To make it easier for our system to understand your data, we slice your text into smaller, self-contained segments. Think of it like cutting a big loaf of bread into manageable slices—each slice can be handled and analyzed on its own.",
+            summaryDataExplanation: (data) => `
+<strong>Chunk Breakdown (Summary):</strong><br>
+Total Chunks: ${data.total_chunks}<br>
+Sample Chunks: ${ (data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
+            `.trim(),
             dataExplanation: (data) => `
-<strong>Total Chunks:</strong> ${data.total_chunks}<br>
-<strong>Sample Chunks:</strong> ${ (data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
+<strong>Chunk Breakdown (Expanded):</strong><br>
+Total Chunks: ${data.total_chunks}<br>
+All Chunks:<br>
+${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
             `.trim()
         },
         embed: {
             title: "Vector Embedding Generation",
             icon: '🧠',
-            description: "<strong>Step 3: Translating Text into Numbers</strong><br>A <em>token</em> is a basic unit of text (which may be a whole word or a subword). LLMs use tokens rather than full words to capture linguistic nuances. Each token is mapped to a numeric vector; each number (or <em>dimension</em>) encodes a semantic feature. For example, if a sentence is tokenized into 4 tokens and each token is represented by 768 numbers, they form a 3072-dimensional representation.",
-            dataExplanation: (data) => `
-<strong>Embedding Stats:</strong><br>
-Each segment is represented by a ${data.dimensions}-dimensional vector.<br>
-Total Embeddings: ${data.total_vectors}<br>
-<strong>Sample Vector Snippet:</strong> (first 10 dims of the first embedding)<br>
-${ data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") }<br><br>
-<strong>Token Breakdown (Full):</strong>
-${ data.token_breakdowns.map((chunkBreakdown, idx) => `
-<br><strong>Chunk ${idx + 1}:</strong>
-${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]` ).join("") }
-`).join("") }
-            `.trim(),
+            description: "<strong>Step 3: Translating Each Chunk into Numbers</strong><br>Now we transform every chunk into a numeric representation known as an ‘embedding.’ This is where meaning meets math. Each chunk gets a high-dimensional vector capturing its essence—making it easier for computers to 'compare' the content of different segments logically.",
             summaryDataExplanation: (data) => `
 <strong>Embedding Stats (Summary):</strong><br>
 Each segment is represented by a ${data.dimensions}-dimensional vector.<br>
 Total Embeddings: ${data.total_vectors}<br>
-<strong>Sample Token Breakdown (first 3 chunks):</strong>
-${ data.token_breakdowns.slice(0,3).map((chunkBreakdown, idx) => `
+Sample Token Breakdown (first 3 chunks): ${ data.token_breakdowns.slice(0,3).map((chunkBreakdown, idx) => `
+<br><strong>Chunk ${idx + 1}:</strong>
+${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]` ).join("") }
+`).join("") }
+            `.trim(),
+            dataExplanation: (data) => `
+<strong>Embedding Stats (Expanded):</strong><br>
+Each segment is represented by a ${data.dimensions}-dimensional vector.<br>
+Total Embeddings: ${data.total_vectors}<br>
+<strong>Sample Vector Snippet (first 10 dims of the first embedding):</strong><br>
+${ data.preview.map((val, i) => `dim${i+1}: ${val.toFixed(6)}`).join("<br>") }<br><br>
+<strong>Full Token Breakdown:</strong>
+${ data.token_breakdowns.map((chunkBreakdown, idx) => `
 <br><strong>Chunk ${idx + 1}:</strong>
 ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${item.token}</span>: [${item.vector_snippet.map(v => v.toFixed(6)).join(", ")}]` ).join("") }
 `).join("") }
@@ -265,41 +277,55 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
         store: {
             title: "Vector Database Storage",
             icon: '🗄️',
-            description: "<strong>Step 4: Stashing Vectors into ChromaDB</strong><br>Your embeddings are stored securely for future retrieval.",
+            description: "<strong>Step 4: Stashing Vectors into ChromaDB</strong><br>All those embeddings need a home. Here, we store them in a specialized database so that, at any moment, we can fetch whichever chunk best matches your needs. It’s like a well-organized library, except the indexes are vectors!",
+            summaryDataExplanation: (data) => `
+<strong>Storage Summary:</strong><br>
+Stored ${data.count} chunks in the collection "${data.collection}".
+            `.trim(),
             dataExplanation: (data) => `
-<strong>Collection:</strong> ${data.collection}<br>
-<strong>Chunks Stored:</strong> ${data.count}<br>
-<strong>Time:</strong> ${data.timestamp}<br>
-<strong>Metadata:</strong> ${JSON.stringify(data.metadata, null, 2)}
+<strong>Storage Details (Expanded):</strong><br>
+Stored ${data.count} chunks in the collection "${data.collection}".
             `.trim()
         },
         query: {
-            title: "Query Processing",
-            icon: '❓',
-            description: "<strong>Step 5: Converting Your Question into a Vector</strong><br>Your query is embedded into the same vector space.",
-            dataExplanation: (data) => `
-<strong>Original Query:</strong> "${data.query}"<br>
-<strong>Vectorized:</strong> [0.0123, -0.0345, 0.0789, ...]
-            `.trim()
-        },
+    title: "Query Processing",
+    icon: '❓',
+    description: "<strong>Step 5: Converting Your Question into a Vector</strong><br>When you ask a question, we convert your query into a vector. This ensures that your question is represented in the same high-dimensional space as your document embeddings, enabling precise comparisons.",
+    summaryDataExplanation: (data) => `
+<strong>Query Vectorization (Summary):</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query}"</span><br>
+Vectorized: [0.0123, -0.0345, 0.0789, ...]
+    `.trim(),
+    dataExplanation: (data) => `
+<strong>Query Vectorization (Expanded):</strong><br>
+Original Query: <span style="color:red;font-weight:bold;">"${data.query}"</span><br>
+Vectorized Representation: [0.0123, -0.0345, 0.0789, ...]<br>
+(Additional vector details can be shown here if available)
+    `.trim()
+},
         retrieve: {
             title: "Context Retrieval",
             icon: '🔎',
-            description: "<strong>Step 6: Fishing Out the Most Relevant Chunks</strong><br>We select the passages that best match your query.",
+            description: "<strong>Step 6: Fishing Out the Most Relevant Chunks</strong><br>We take the newly minted query vector and compare it to our entire library of chunk vectors. The ones that line up the best (i.e., have the highest similarity) are reeled in as the best candidate passages to answer your question.",
+            summaryDataExplanation: (data) => `
+<strong>Top Matches (Summary):</strong><br>
+${data.passages.slice(0, Math.ceil(data.passages.length/2)).map((passage, i) => `<br><span style="color:red;font-weight:bold;">Match ${i + 1} (similarity: ${(data.scores[i]*100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>')}
+            `.trim(),
             dataExplanation: (data) => `
-<strong>Top Matches Found:</strong><br>
-${data.passages.length} passages identified.
-${ (data.passages || []).map((passage, i) => `<br><span style="color:red;font-weight:bold;">Match ${i + 1} (similarity: ${(data.scores[i]*100).toFixed(1)}%):</span> "${passage}"`).join('') }<br><br>
-<strong>Why Similarity Matters?</strong><br>
-A high similarity indicates that, even if the query term (e.g. "Ibach") doesn’t appear verbatim, its semantic context is strongly matched.
+<strong>Top Matches (Expanded):</strong><br>
+${data.passages.map((passage, i) => `<br><span style="color:red;font-weight:bold;">Match ${i + 1} (similarity: ${(data.scores[i]*100).toFixed(1)}%):</span> "${passage}"`).join('<br><br>')}
             `.trim()
         },
         generate: {
             title: "Answer Generation",
             icon: '🤖',
-            description: "<strong>Step 7: Shaping the Final Answer</strong><br>GPT crafts a final answer using your query and the retrieved context.",
+            description: "<strong>Step 7: Shaping the Final Answer</strong><br>This is where GPT comes in. We feed the question and the top matching text chunks to GPT. By combining your query’s intention with context from your own data, GPT crafts a targeted answer. It’s the perfect union of clarity and fluency.",
+            summaryDataExplanation: (data) => `
+<strong>Answer (Summary):</strong><br>
+${data.answer.substring(0, Math.floor(data.answer.length/2))}...
+            `.trim(),
             dataExplanation: (data) => `
-<strong>Answer:</strong><br>
+<strong>Answer (Expanded):</strong><br>
 ${data.answer}
             `.trim()
         }
@@ -463,7 +489,8 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
     if doc_count == 0:
         st.warning("No documents found in the collection. Please upload a document first.")
         return [], []
-    query_embedding = embed_text([query])
+    # Compute the query embedding but do not update the "embed" stage:
+    query_embedding = embed_text([query], update_stage_flag=False)
     results = collection.query(query_embeddings=query_embedding, n_results=n_results)
     retrieved_passages = results.get("documents", [[]])[0]
     retrieved_metadata = results.get("metadatas", [[]])[0]
