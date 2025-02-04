@@ -673,7 +673,7 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
                                 "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
                                 "2. Use italics for emphasis or important nuances.\n"
                                 "3. Maintain a clear, layered structure: \n"
-                                "   - TL;DR summary (bullet points, doc-based only)\n"
+                                "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
                                 "   - Detailed Explanation (doc-based only)\n"
                                 "   - Other references (your additional knowledge or commentary)\n"
                                 "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
