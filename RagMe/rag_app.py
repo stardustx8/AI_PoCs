@@ -620,7 +620,7 @@ def get_ephemeral_token(collection_name: str = "demo_collection"):
         "Authorization": f"Bearer {st.session_state['api_key']}",
         "Content-Type": "application/json"
     }
-    data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": "verse"}
+    data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": "coral"} #  `alloy`, `ash`, `ballad`, `coral`, `echo` `sage`, `shimmer`, `verse`
     try:
         resp = requests.post(url, headers=headers, json=data)
         resp.raise_for_status()
