@@ -942,18 +942,25 @@ def main():
     
         # Step 1: Upload
         st.subheader("Step 1: Upload")
-        uploaded_file = st.file_uploader("Upload a document (txt, pdf, docx, rtf, csv, xlsx)", 
-                                        type=["txt", "pdf", "docx", "rtf", "csv", "xlsx"])
+        uploaded_files = st.file_uploader(
+            "Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
+            type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
+            accept_multiple_files=True
+        )
+
         if st.button("Run Step 1: Upload"):
-            if uploaded_file is not None:
-                text = extract_text_from_file(uploaded_file)
-                if text:
-                    st.session_state.uploaded_text = text
-                    # Update the stage using your existing helper function
-                    update_stage('upload', {'content': text, 'size': len(text)})
-                    st.success("File uploaded and processed!")
+            if uploaded_files:
+                combined_text = ""
+                for uploaded_file in uploaded_files:
+                    text = extract_text_from_file(uploaded_file)
+                    if text:
+                        combined_text += f"\n\n---\n\n{text}"
+                if combined_text:
+                    st.session_state.uploaded_text = combined_text
+                    update_stage('upload', {'content': combined_text, 'size': len(combined_text)})
+                    st.success("Files uploaded and processed!")
                 else:
-                    st.error("Failed to extract text from the uploaded file.")
+                    st.error("No text could be extracted from the uploaded files.")
             else:
                 st.warning("No file selected.")
         
@@ -990,14 +997,21 @@ def main():
         
         # Step 5: Query Collection
         st.subheader("Step 5: Query Collection")
-        query_text = st.text_input("Enter your query for Step 5", value=st.session_state.query_text_step5)
+
+        # Use a unique key so that the text input's value persists independently.
+        query_text = st.text_input("Enter your query for Step 5", key="query_text_input")
+
         if st.button("Run Step 5: Query Collection"):
-            if query_text.strip():
-                query_data = embed_text([query_text], update_stage_flag=False, return_data=True)
-                query_data['query'] = query_text
+            # Retrieve the current query value from session_state using the unique key.
+            current_query = st.session_state.query_text_input
+            
+            if current_query.strip():
+                # Embed the query and update the stage
+                query_data = embed_text([current_query], update_stage_flag=False, return_data=True)
+                query_data['query'] = current_query
                 update_stage('query', query_data)
                 st.session_state.query_embedding = query_data["embeddings"]
-                st.session_state.query_text_step5 = query_text
+                st.session_state.query_text_step5 = current_query  # Optionally persist the current query
                 st.success("Query vectorized!")
             else:
                 st.warning("Please enter a query.")
@@ -1015,15 +1029,21 @@ def main():
         
         # Step 7: Get Answer
         st.subheader("Step 7: Get Answer")
-        final_question = st.text_input("Enter your final question for Step 7", value=st.session_state.final_question_step7)
+
+        # Use a unique key for the text input so that its value persists independently.
+        final_question = st.text_input("Enter your final question for Step 7", key="final_question_input")
+
         if st.button("Run Step 7: Get Answer"):
-            if final_question.strip():
-                # First do a new retrieval for this specific question
-                passages, metadata = query_collection(final_question, "demo_collection")
+            # Retrieve the current value from session state using the unique key.
+            current_question = st.session_state.final_question_input
+            
+            if current_question.strip():
+                # Perform query and generation using the current question.
+                passages, metadata = query_collection(current_question, "demo_collection")
                 if passages:
-                    answer = generate_answer_with_gpt(final_question, passages, metadata)
+                    answer = generate_answer_with_gpt(current_question, passages, metadata)
                     st.session_state.final_answer = answer
-                    st.session_state.final_question_step7 = final_question
+                    st.session_state.final_question_step7 = current_question  # Optional: persist the last used question.
                     st.success("Answer generated!")
                     st.write(answer)
                 else:
