@@ -679,6 +679,8 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
                                 "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
                                 "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
                                 "6. Answer succinctly and accurately, focusing on the question asked.\n"
+                                "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
+                                "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria."
                             )):
     if new_client is None:
         st.error("OpenAI client not initialized. Provide an API key in the sidebar.")
