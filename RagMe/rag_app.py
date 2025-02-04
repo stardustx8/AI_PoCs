@@ -19,6 +19,26 @@ import requests
 from openai import OpenAI
 import shutil
 
+try:
+    import pandas as pd
+except ImportError:
+    st.error("Please install pandas to handle Excel/CSV files.")
+
+try:
+    from PyPDF2 import PdfReader
+except ImportError:
+    st.error("Please install PyPDF2 to handle PDF files.")
+
+try:
+    import docx
+except ImportError:
+    st.error("Please install python-docx to handle DOCX files.")
+
+try:
+    from striprtf.striprtf import rtf_to_text
+except ImportError:
+    st.error("Please install striprtf to handle RTF files (pip install striprtf).")
+
 # Create embedding function that uses OpenAI
 class OpenAIEmbeddingFunction:
     def __init__(self, api_key):
@@ -217,6 +237,68 @@ def embed_text(
     if return_data:
         return embedding_data
     return embeddings
+
+def extract_text_from_file(uploaded_file) -> str:
+    """
+    Detects the file type from its extension and extracts text accordingly.
+    """
+    file_name = uploaded_file.name.lower()
+    
+    if file_name.endswith('.txt'):
+        # Text file: decode as UTF-8
+        text = uploaded_file.read().decode("utf-8")
+        
+    elif file_name.endswith('.pdf'):
+        # PDF file: use PyPDF2 to extract text from each page
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+                
+    elif file_name.endswith('.csv'):
+        # CSV file: use pandas to read and convert to string
+        try:
+            df = pd.read_csv(uploaded_file)
+            text = df.to_csv(index=False)
+        except Exception as e:
+            st.error(f"Error reading CSV file: {e}")
+            text = ""
+    
+    elif file_name.endswith('.xlsx'):
+        # Excel file: use pandas to read and convert to CSV string
+        try:
+            df = pd.read_excel(uploaded_file)
+            text = df.to_csv(index=False)
+        except Exception as e:
+            st.error(f"Error reading Excel file: {e}")
+            text = ""
+    
+    elif file_name.endswith('.docx'):
+        # DOCX file: use python-docx to extract text from paragraphs
+        try:
+            doc = docx.Document(uploaded_file)
+            text = "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            st.error(f"Error reading DOCX file: {e}")
+            text = ""
+    
+    elif file_name.endswith('.rtf'):
+        # RTF file: use striprtf to convert RTF to plain text
+        try:
+            # Read the RTF file as a string. Adjust encoding if necessary.
+            file_contents = uploaded_file.read().decode("utf-8", errors="ignore")
+            text = rtf_to_text(file_contents)
+        except Exception as e:
+            st.error(f"Error reading RTF file: {e}")
+            text = ""
+    
+    else:
+        st.warning("Unsupported file type.")
+        text = ""
+    
+    return text
 
 #######################################################################
 # 5) FULL REACT PIPELINE SNIPPET (WORKING VERSION)
@@ -857,16 +939,21 @@ def main():
     
     with col1:
         st.header("Step-by-Step Pipeline Control")
-        
+    
         # Step 1: Upload
         st.subheader("Step 1: Upload")
-        uploaded_file = st.file_uploader("Upload a document (txt, pdf, docx, csv, xlsx)", type=["txt", "pdf", "docx", "csv", "xlsx"])
+        uploaded_file = st.file_uploader("Upload a document (txt, pdf, docx, rtf, csv, xlsx)", 
+                                        type=["txt", "pdf", "docx", "rtf", "csv", "xlsx"])
         if st.button("Run Step 1: Upload"):
             if uploaded_file is not None:
-                text = uploaded_file.read().decode("utf-8")
-                st.session_state.uploaded_text = text
-                update_stage('upload', {'content': text, 'size': len(text)})
-                st.success("File uploaded!")
+                text = extract_text_from_file(uploaded_file)
+                if text:
+                    st.session_state.uploaded_text = text
+                    # Update the stage using your existing helper function
+                    update_stage('upload', {'content': text, 'size': len(text)})
+                    st.success("File uploaded and processed!")
+                else:
+                    st.error("Failed to extract text from the uploaded file.")
             else:
                 st.warning("No file selected.")
         
