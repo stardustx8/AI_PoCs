@@ -107,7 +107,7 @@ if 'final_answer' not in st.session_state:
 if 'final_question_step7' not in st.session_state:
     st.session_state.final_question_step7 = ""
 # Use default collection name
-st.session_state.collection_name = "demo_collection"
+st.session_state.collection_name = "rag_collection"
 if 'delete_confirm' not in st.session_state:
     st.session_state.delete_confirm = False
 if 'avm_active' not in st.session_state:
@@ -379,11 +379,11 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
             description: "<strong>Step 4: Storage</strong><br>Embeddings are stored in the database.",
             summaryDataExplanation: (data) => `
 <strong>Storage Summary:</strong><br>
-Stored ${data.count} chunks in collection "demo_collection".
+Stored ${data.count} chunks in collection "rag_collection".
             `.trim(),
             dataExplanation: (data) => `
 <strong>Storage Details (Expanded):</strong><br>
-Stored ${data.count} chunks in collection "demo_collection" at ${data.timestamp}.
+Stored ${data.count} chunks in collection "rag_collection" at ${data.timestamp}.
             `.trim()
         },
         query: {
@@ -693,7 +693,7 @@ def summarize_context(passages: list[str]) -> str:
 #######################################################################
 # 7) REALTIME VOICE MODE
 #######################################################################
-def get_ephemeral_token(collection_name: str = "demo_collection"):
+def get_ephemeral_token(collection_name: str = "rag_collection"):
     if "api_key" not in st.session_state:
         st.error("OpenAI API key not set.")
         return None
@@ -842,7 +842,7 @@ def get_realtime_html(token_data: dict) -> str:
 def toggle_avm():
     st.session_state.avm_active = not st.session_state.avm_active
     if st.session_state.avm_active:
-        token_data = get_ephemeral_token("demo_collection")
+        token_data = get_ephemeral_token("rag_collection")
         if token_data:
             st.session_state.voice_html = get_realtime_html(token_data)
         else:
@@ -906,7 +906,7 @@ def main():
             return
 
         # If currently inactive, turn it on
-        token_data = get_ephemeral_token("demo_collection")
+        token_data = get_ephemeral_token("rag_collection")
         if token_data:
             st.session_state.voice_html = get_realtime_html(token_data)
             st.session_state.avm_active = True
@@ -990,8 +990,8 @@ def main():
             if st.session_state.chunks and st.session_state.embeddings:
                 ids = [str(uuid.uuid4()) for _ in st.session_state.chunks]
                 metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
-                add_to_chroma_collection("demo_collection", st.session_state.chunks, metadatas, ids)
-                st.success("Data stored in collection 'demo_collection'!")
+                add_to_chroma_collection("rag_collection", st.session_state.chunks, metadatas, ids)
+                st.success("Data stored in collection 'rag_collection'!")
             else:
                 st.warning("Ensure document is uploaded, chunked, and embedded.")
         
@@ -1020,7 +1020,7 @@ def main():
         st.subheader("Step 6: Retrieve")
         if st.button("Run Step 6: Retrieve"):
             if st.session_state.query_embedding:
-                passages, metadata = query_collection(st.session_state.query_text_step5, "demo_collection")
+                passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection")
                 st.session_state.retrieved_passages = passages
                 st.session_state.retrieved_metadata = metadata
                 st.success("Relevant passages retrieved!")
@@ -1039,7 +1039,7 @@ def main():
             
             if current_question.strip():
                 # Perform query and generation using the current question.
-                passages, metadata = query_collection(current_question, "demo_collection")
+                passages, metadata = query_collection(current_question, "rag_collection")
                 if passages:
                     answer = generate_answer_with_gpt(current_question, passages, metadata)
                     st.session_state.final_answer = answer
