@@ -849,7 +849,7 @@ def main():
 
     # If AVM is active, show the realtime voice component
     if st.session_state.avm_active and st.session_state.voice_html:
-        st.sidebar.markdown("#### Realtime Voice")
+        # st.sidebar.markdown("#### Realtime Voice")
         components.html(st.session_state.voice_html, height=1, scrolling=True)
     
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
