@@ -57,6 +57,9 @@ def init_chroma_client():
 #######################################################################
 # 2) SESSION STATE INIT
 #######################################################################
+if 'avm_button_key' not in st.session_state:
+    st.session_state.avm_button_key = 0
+    
 if 'current_stage' not in st.session_state:
     st.session_state.current_stage = None
 
@@ -362,11 +365,24 @@ ${ data.answer || "No answer available." }
         }, [args.currentStage]);
         
         useEffect(() => {
-            // Scroll the active element into view with its top aligned to the top of its container.
-            const activeElem = document.querySelector('.active-stage');
-            if (activeElem) {
-                activeElem.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
+            // Wait a bit for the DOM to update
+            setTimeout(() => {
+                const activeElem = document.querySelector('.active-stage');
+                const container = document.querySelector('.pipeline-column');
+                if (activeElem && container) {
+                    const headerOffset = 100; // Adjust based on your header height
+                    const elemTop = activeElem.offsetTop - headerOffset;
+                    
+                    // Find the scrollable container (pipeline-container)
+                    const scrollContainer = document.querySelector('.pipeline-container');
+                    if (scrollContainer) {
+                        scrollContainer.scrollTo({
+                            top: elemTop,
+                            behavior: 'smooth'
+                        });
+                    }
+                }
+            }, 100);
         }, [activeStage]);
         
         const formatModalContent = (stage) => {
@@ -444,8 +460,33 @@ ${ data.answer || "No answer available." }
   ::-webkit-scrollbar { width: 0px; background: transparent; }
   body { background-color: #111; color: #fff; margin: 0; padding: 0; }
   #rag-root { font-family: system-ui, sans-serif; height: 100%; width: 100%; margin: 0; padding: 0; }
-  .pipeline-container { padding: 1rem 10rem 1rem 1rem; overflow-y: auto; overflow-x: visible; height: 100vh; box-sizing: border-box; width: 100%; }
-  .pipeline-column { display: flex; flex-direction: column; align-items: stretch; width: 100%; margin: 0 auto; padding-right: 10rem; overflow-x: visible; }
+    .pipeline-container { 
+        padding: 1rem 10rem 1rem 1rem; 
+        overflow-y: auto; 
+        overflow-x: visible; 
+        height: 100vh;  
+        box-sizing: border-box; 
+        width: 100%;
+        position: static;  /* Changed from fixed */
+        right: 0;
+    }
+
+    .pipeline-column {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+        margin: 0 auto;
+        padding-right: 10rem;
+        overflow-x: visible;
+        min-height: 100vh;  /* Changed */
+        padding-bottom: 50vh;  /* Add this to allow scrolling past the last element */
+    }
+
+    .modal-content {
+        max-height: none;  /* Add this if there are any modal height restrictions */
+        height: auto;      /* Add this */
+    }
   .pipeline-box { width: 100%; margin-bottom: 1rem; padding: 1.5rem; border: 2px solid #4B5563; border-radius: 0.75rem; background-color: #1a1a1a; cursor: pointer; transition: all 0.3s; text-align: left; transform-origin: center; position: relative; z-index: 1; }
   .pipeline-box:hover { transform: scale(1.02); border-color: #6B7280; z-index: 1000; }
   .completed-stage { background-color: rgba(34, 197, 94, 0.1); border-color: #22C55E; }
@@ -716,6 +757,18 @@ def get_realtime_html(token_data: dict) -> str:
     """
     return realtime_js
 
+def toggle_avm():
+    st.session_state.avm_active = not st.session_state.avm_active
+    if st.session_state.avm_active:
+        token_data = get_ephemeral_token("demo_collection")
+        if token_data:
+            st.session_state.voice_html = get_realtime_html(token_data)
+        else:
+            st.session_state.avm_active = False
+            st.session_state.voice_html = None
+    else:
+        st.session_state.voice_html = None
+
 #######################################################################
 # 8) MAIN STREAMLIT APP
 #######################################################################
@@ -740,24 +793,46 @@ def main():
             st.error("ChromaDB client not initialized properly")
             st.stop()
     
+    
+
+    # This goes in main() where the AVM controls are
     st.sidebar.markdown("### AVM Controls")
-    # Toggle button for AVM: if active, show "End AVM", otherwise "Start AVM"
-    if st.session_state.avm_active:
-        if st.sidebar.button("End AVM"):
+
+    def toggle_avm():
+        st.session_state.avm_button_key += 1  # Force button refresh
+        
+        # If currently active, turn it off
+        if st.session_state.avm_active:
             st.session_state.voice_html = None
             st.session_state.avm_active = False
-            st.sidebar.success("AVM ended.")
+            st.session_state.avm_button_key += 1
+            return
+
+        # If currently inactive, turn it on
+        token_data = get_ephemeral_token("demo_collection")
+        if token_data:
+            st.session_state.voice_html = get_realtime_html(token_data)
+            st.session_state.avm_active = True
+            st.session_state.avm_button_key += 1
+        else:
+            st.sidebar.error("Could not start AVM. Check error messages above.")
+
+    # The button with its label tied directly to the state
+    if st.sidebar.button(
+        "End AVM" if st.session_state.avm_active else "Start AVM",
+        key=f"avm_toggle_{st.session_state.avm_button_key}",
+        on_click=toggle_avm
+    ):
+        pass  # The actual logic is in toggle_avm
+
+    # Show success message based on state change
+    if st.session_state.avm_active:
+        st.sidebar.success("AVM started.")
     else:
-        if st.sidebar.button("Start AVM"):
-            token_data = get_ephemeral_token("demo_collection")
-            if token_data:
-                st.session_state.voice_html = get_realtime_html(token_data)
-                st.session_state.avm_active = True
-                st.sidebar.success("AVM started.")
-            else:
-                st.sidebar.error("Could not start AVM. Check error messages above.")
-    
-    # If AVM is active, show the realtime voice component miniaturized in the sidebar
+        if st.session_state.avm_button_key > 0:  # Only show if there's been at least one click
+            st.sidebar.success("AVM ended.")
+
+    # If AVM is active, show the realtime voice component
     if st.session_state.avm_active and st.session_state.voice_html:
         st.sidebar.markdown("#### Realtime Voice")
         components.html(st.session_state.voice_html, height=300, scrolling=True)
@@ -855,7 +930,7 @@ def main():
                 st.warning("Please enter your final question.")
     
     with col2:
-        st.header("🌀 Pipeline Visualization")
+        st.header("RAG Pipeline Visualization")
         component_args = {
             "currentStage": st.session_state.current_stage,
             "stageData": { s: st.session_state.get(f'{s}_data')
