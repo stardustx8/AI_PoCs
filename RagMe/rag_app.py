@@ -529,7 +529,7 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
         st.stop()
     
-    st.write(f"Attempting to load collection '{collection_name}'...")
+    # st.write(f"Attempting to load collection '{collection_name}'...")
     
     if force_recreate:
         try:
@@ -542,9 +542,9 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
         # When a collection already exists, ChromaDB will not update its stored embedding function.
         coll = chroma_client.get_collection(name=collection_name, embedding_function=embedding_function_instance)
         coll_info = coll.get()
-        st.write(f"Collection '{collection_name}' found with {len(coll_info.get('ids', []))} documents.")
+        # st.write(f"Collection '{collection_name}' found with {len(coll_info.get('ids', []))} documents.")
     except Exception as e:
-        st.write(f"Collection '{collection_name}' not found or error encountered: {e}. Creating a new collection.")
+        # st.write(f"Collection '{collection_name}' not found or error encountered: {e}. Creating a new collection.")
         coll = chroma_client.create_collection(name=collection_name, embedding_function=embedding_function_instance)
     return coll
 
@@ -835,7 +835,7 @@ def main():
     # If AVM is active, show the realtime voice component
     if st.session_state.avm_active and st.session_state.voice_html:
         st.sidebar.markdown("#### Realtime Voice")
-        components.html(st.session_state.voice_html, height=300, scrolling=True)
+        components.html(st.session_state.voice_html, height=1, scrolling=True)
     
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
     col1, spacer, col2 = st.columns([1, 0.2, 2])
