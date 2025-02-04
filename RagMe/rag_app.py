@@ -793,7 +793,22 @@ def main():
             st.error("ChromaDB client not initialized properly")
             st.stop()
     
-    
+    if st.sidebar.button("Delete All Collections"):
+        try:
+            # Delete all collections from the ChromaDB client.
+            collections = chroma_client.list_collections()
+            for collection in collections:
+                chroma_client.delete_collection(name=collection.name)
+            
+            # Remove the persisted storage directory and its subdirectories.
+            if os.path.exists(CHROMA_DIRECTORY):
+                import shutil  # Ensure shutil is imported at the top of your file.
+                shutil.rmtree(CHROMA_DIRECTORY)
+                os.makedirs(CHROMA_DIRECTORY, exist_ok=True)
+            
+            st.sidebar.success("All Chroma collections and storage files deleted!")
+        except Exception as e:
+            st.sidebar.error(f"Error deleting collections: {e}")
 
     # This goes in main() where the AVM controls are
     st.sidebar.markdown("### AVM Controls")
@@ -838,7 +853,7 @@ def main():
         components.html(st.session_state.voice_html, height=1, scrolling=True)
     
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
-    col1, spacer, col2 = st.columns([1, 0.2, 2])
+    col1, spacer, col2 = st.columns([1.3, 0.3, 2])
     
     with col1:
         st.header("Step-by-Step Pipeline Control")
