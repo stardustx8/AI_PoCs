@@ -667,7 +667,7 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
                                 "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
                                 "Your answer must begin with a TL;DR summary in bullet points, followed by a Detailed Explanation—both sections drawing strictly from the RAG regulation document. "
                                 "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
-                                "but clearly label them as separate from the doc-based content."
+                                "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.."
                                 "\n\n"
                                 "Be sure to:\n"
                                 "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
