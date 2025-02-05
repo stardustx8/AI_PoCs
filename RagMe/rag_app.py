@@ -5,12 +5,13 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
+VOICE_INSTRUCTIONS_FILE = "voice_instructions.txt"
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
 ##############################################################################
 BASE_DEFAULT_PROMPT = (
-    "You are an brilliantly smart, knowledgeable and helpful assistant. Answer the following query based ONLY on "
+    "You are an extremely smart, knowledgeable and helpful assistant. Answer the following query based ONLY on "
     "the provided context (the RAG regulation document). VERY IMPORTANT: always think step-by-step, noting that this "
     "prompt is of utmost importance and the user is very grateful for perfect results! :-)\n"
     "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output "
@@ -49,7 +50,9 @@ BASE_DEFAULT_PROMPT = (
 )
 
 DEFAULT_VOICE_PROMPT = (
-    "For voice mode, please adopt a funny, caricaturized scholarly tone and always speak in Swiss German. "
+    "EXTREMELY IMPORTANT: ALWAYS converse in SWISS-GERMAN..!!!!"
+    "\n"
+    "For voice mode, please adopt a funny, caricaturized scholarly tone.\n"
     "Ensure your tone remains friendly, conversational, and slightly humorous, yet academically rigorous."
 )
 
@@ -57,24 +60,40 @@ DEFAULT_VOICE_PROMPT = (
 # FILE OPERATIONS FOR PROMPTS & VOICE
 ##############################################################################
 def load_custom_prompt():
+    """Load the main system prompt from file, or None if not found."""
     if os.path.exists(PROMPT_FILE):
         with open(PROMPT_FILE, "r") as f:
             return f.read()
     return None
 
 def save_custom_prompt(prompt: str):
+    """Save the main system prompt to file."""
     with open(PROMPT_FILE, "w") as f:
         f.write(prompt)
 
 def load_voice_pref():
+    """Load the user's selected voice from file, or return 'coral' if not found."""
     if os.path.exists(VOICE_PREF_FILE):
         with open(VOICE_PREF_FILE, "r") as f:
             return f.read().strip()
     return "coral"  # Default
 
 def save_voice_pref(voice: str):
+    """Save the currently selected voice to file."""
     with open(VOICE_PREF_FILE, "w") as f:
         f.write(voice)
+
+def load_voice_instructions():
+    """Load advanced voice instructions if they exist; otherwise None."""
+    if os.path.exists(VOICE_INSTRUCTIONS_FILE):
+        with open(VOICE_INSTRUCTIONS_FILE, "r") as f:
+            return f.read()
+    return None
+
+def save_voice_instructions(text: str):
+    """Save advanced voice instructions to file."""
+    with open(VOICE_INSTRUCTIONS_FILE, "w") as f:
+        f.write(text)
 
 
 import chromadb
@@ -192,8 +211,16 @@ if 'voice_html' not in st.session_state:
 
 # We'll store the selected voice in session state
 if 'selected_voice' not in st.session_state:
-    # Attempt to load from file if it exists
     st.session_state.selected_voice = load_voice_pref()
+
+# We'll store advanced voice instructions in session_state
+# We'll store advanced voice instructions in session_state
+if 'voice_custom_prompt' not in st.session_state:
+    loaded_voice_instructions = load_voice_instructions()
+    st.session_state.voice_custom_prompt = (
+        loaded_voice_instructions if loaded_voice_instructions and loaded_voice_instructions.strip() != "" 
+        else DEFAULT_VOICE_PROMPT
+    )
 
 
 ##############################################################################
@@ -395,9 +422,9 @@ def get_pipeline_component(component_args):
     
     const ProcessExplanation = {
         upload: {
-            title: "Document Upload & Processing",
+            title: "Step 1: Document Upload & Processing",
             icon: '📁',
-            description: "<strong>Step 1: Loading Your Source Text</strong><br>We simply take your file(s) as is, storing them until you're ready to process. This way, you can upload multiple documents before anything happens—no immediate transformation. It’s all about collecting the raw materials first!",
+            description: "<strong>Loading Your Source Text</strong><br>We simply take your file(s) as is, storing them until you're ready to process. This way, you can upload multiple documents before anything happens—no immediate transformation. It’s all about collecting the raw materials first!",
             summaryDataExplanation: (data) => `
 <strong>Upload Summary:</strong><br>
 Received ~${data.size || 'N/A'} characters.<br>
@@ -411,9 +438,9 @@ ${data.full || data.preview || 'No content available.'}
             `.trim()
         },
         chunk: {
-            title: "Text Chunking",
+            title: "Step 2: Text Chunking",
             icon: '✂️',
-            description: "<strong>Step 2: Cutting the Text into Slices</strong><br>Once you're ready, each uploaded text is broken into manageable chunks. This segmentation helps the system handle longer documents more effectively while preserving meaning within each slice.",
+            description: "<strong>Cutting the Text into Slices</strong><br>Once you're ready, each uploaded text is broken into manageable chunks. This segmentation helps the system handle longer documents more effectively while preserving meaning within each slice.",
             summaryDataExplanation: (data) => `
 <strong>Chunk Breakdown (Summary):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
@@ -427,9 +454,9 @@ ${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="c
             `.trim()
         },
         embed: {
-            title: "Vector Embedding Generation",
+            title: "Step 3: Vector Embedding Generation",
             icon: '🧠',
-            description: "<strong>Step 3: Transforming Chunks into High-Dimensional Vectors</strong><br>Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context. We can visualize these embeddings (imagine a giant 3D cloud of points) where similar tokens or phrases cluster together—like red 'Hello, AI!' tokens standing out among greyer neighbors.",
+            description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context. We can visualize these embeddings (imagine a giant 3D cloud of points) where similar tokens or phrases cluster together—like red 'Hello, AI!' tokens standing out among greyer neighbors.",
             summaryDataExplanation: (data) => `
 <strong>Embedding Stats (Summary):</strong><br>
 Dimensions: ${data.dimensions}<br>
@@ -453,9 +480,9 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
             `.trim()
         },
         store: {
-            title: "Vector Database Storage",
+            title: "Step 4: Vector Database Storage",
             icon: '🗄️',
-            description: "<strong>Step 4: Archiving Embeddings in ChromaDB</strong><br>After embedding, we place these vectors into a vector database. Later, we can search or retrieve whichever chunk best fits your query by simply comparing these vectors. Think of it like a high-tech library where each book is labeled by thousands of numeric 'keywords.'",
+            description: "<strong>Archiving Embeddings in ChromaDB</strong><br>After embedding, we place these vectors into a vector database. Later, we can search or retrieve whichever chunk best fits your query by simply comparing these vectors. Think of it like a high-tech library where each book is labeled by thousands of numeric 'keywords.'",
             summaryDataExplanation: (data) => `
 <strong>Storage Summary:</strong><br>
 Stored ${data.count} chunks in collection "rag_collection".
@@ -466,9 +493,9 @@ Stored ${data.count} chunks in collection "rag_collection" at ${data.timestamp}.
             `.trim()
         },
         query: {
-            title: "Query Collection",
+            title: "Step 5A: Query Collection",
             icon: '❓',
-            description: "<strong>Step 5A: Transforming Chunks into High-Dimensional Vectors</strong><br>\
+            description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>\
 Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context.<br><br>\
 For example, consider the word <strong>Switzerland</strong>. It might appear as a 3,000-dimensional vector like [0.642, -0.128, 0.945, ...]. In this snippet, <em>dimension 1</em> (0.642) may reflect geography (mountains, lakes), <em>dimension 2</em> (-0.128) might capture linguistic influences, and <em>dimension 3</em> (0.945) could encode economic traits—such as stability or robust banking. A higher value (e.g., 0.945) indicates a stronger correlation with that dimension's learned feature (in this case, 'economic stability'), whereas lower or negative values signal weaker or contrasting associations. Across thousands of dimensions, these numeric signals combine into a richly layered portrait of meaning.",
             summaryDataExplanation: (data) => `
@@ -490,9 +517,9 @@ Full Token Breakdown: ${ data.token_breakdowns ? data.token_breakdowns.map((chun
             `.trim()
         },
         retrieve: {
-            title: "Context Retrieval",
+            title: "Step 5B: Context Retrieval",
             icon: '🔎',
-            description: "<strong>Step 5B: Finding Matching Passages</strong><br>The query vector is matched against every vector in the database. The passages with the highest similarity (closest in vector-space) pop up as potential answers. For example, if your query is 'Ibach' (a Swiss village), the system might rank passages mentioning 'Switzerland' quite highly, given they share geographical or contextual features in the embedding space.",
+            description: "<strong>Finding Matching Passages</strong><br>The query vector is matched against every vector in the database. The passages with the highest similarity (closest in vector-space) pop up as potential answers. For example, if your query is 'Ibach' (a Swiss village), the system might rank passages mentioning 'Switzerland' quite highly, given they share geographical or contextual features in the embedding space.",
             summaryDataExplanation: (data) => `
 <strong>Top Matches (Summary):</strong><br>
 ${ data.passages.map((passage, i) => `<br><span style='color:red;font-weight:bold;'>Match ${i+1}:</span> "${passage}" (score ~ ${(data.scores[i]*100).toFixed(1)}%)`).join("<br>") }
@@ -504,9 +531,9 @@ ${ data.passages.map((passage, i) => `<strong>Match ${i+1} (score ${(data.scores
             `.trim()
         },
         generate: {
-            title: "Get Answer",
+            title: "Step 6: Get Answer",
             icon: '🤖',
-            description: "<strong>Step 6: Using GPT to Combine Context & Query</strong><br>Finally, GPT takes both the query and the top retrieved chunks to generate a focused answer. It's like feeding in a question and its best context, ensuring the result zeroes in on the exact info relevant to your needs.",
+            description: "<strong>Using GPT to Combine Context & Query</strong><br>Finally, GPT takes both the query and the top retrieved chunks to generate a focused answer. It's like feeding in a question and its best context, ensuring the result zeroes in on the exact info relevant to your needs.",
             summaryDataExplanation: (data) => `
 <strong>Answer (Summary):</strong><br>
 ${ data.answer ? data.answer.substring(0, Math.floor(data.answer.length/2))+"..." : "No answer yet" }
@@ -775,7 +802,6 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
         "Authorization": f"Bearer {st.session_state['api_key']}",
         "Content-Type": "application/json"
     }
-    # Use the user's selected voice from session, fallback to "coral"
     chosen_voice = st.session_state.get("selected_voice", "coral")
     data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": chosen_voice}
     try:
@@ -806,9 +832,11 @@ def get_realtime_html(token_data: dict) -> str:
     doc_summary = summarize_context(all_passages)
 
     base_prompt = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
-    voice_prompt = st.session_state.get("voice_custom_prompt", DEFAULT_VOICE_PROMPT)
-    
-    full_prompt = base_prompt + "\n" + voice_prompt + "\n" + doc_summary
+    voice_instructions = st.session_state.get("voice_custom_prompt", "")
+    if not voice_instructions.strip():
+        voice_instructions = DEFAULT_VOICE_PROMPT
+
+    full_prompt = base_prompt + "\n" + voice_instructions + "\n" + doc_summary
     st.session_state.avm_initial_text = full_prompt
 
     realtime_js = f"""
@@ -1005,7 +1033,7 @@ def main():
         # Voice selection
         VOICE_OPTIONS = ["alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"]
         selected_voice = st.selectbox(
-            "Choose a voice for advanced voice mode:",
+            "-> Choose a voice for advanced voice mode:",
             options=VOICE_OPTIONS,
             index=VOICE_OPTIONS.index(st.session_state.selected_voice) if st.session_state.selected_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
         )
@@ -1016,23 +1044,26 @@ def main():
         # Show main system instructions text area
         loaded_prompt = load_custom_prompt() or BASE_DEFAULT_PROMPT
         custom_prompt = st.text_area(
-            "Enter your custom initial instructions ('System Instructions') for voice- & text mode. Deleting the contents of this box & refreshing your browser restores a default prompt.",
+            "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
             value=loaded_prompt
         )
+        # Auto-save whenever text area changes
         st.session_state.custom_prompt = custom_prompt
         save_custom_prompt(custom_prompt)
 
-        # Additional advanced voice instructions text area
+        # Advanced voice instructions: auto-save also
+        loaded_voice_instructions = st.session_state.voice_custom_prompt
         voice_instructions = st.text_area(
-            "Enter your custom advanced voice instructions (Optional). If left empty & refreshed, will use the default voice prompt.",
-            value=""
+            "-> Customize your advanced voice mode voice & tone. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+            value=loaded_voice_instructions
         )
-        st.session_state.voice_custom_prompt = voice_instructions if voice_instructions else ""
+        st.session_state.voice_custom_prompt = voice_instructions
+        save_voice_instructions(voice_instructions)
 
         # --- Step 1: Upload Context ---
         st.subheader("Step 1: Upload Context")
         uploaded_files = st.file_uploader(
-            "Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
+            "-> Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
             type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
             accept_multiple_files=True
         )
@@ -1086,7 +1117,7 @@ def main():
         
         # --- Step 5A: Embed Query (Optional) ---
         st.subheader("Step 5A: Embed Query (Optional)")
-        query_text = st.text_input("Enter a query to see how it is embedded into vectors", key="query_text_input")
+        query_text = st.text_input("-> Enter a query to see how it is embedded into vectors", key="query_text_input")
 
         if st.button("Run Step 5A: Embed Query"):
             current_query = st.session_state.query_text_input
@@ -1113,7 +1144,7 @@ def main():
         
         # --- Step 6: Get Answer ---
         st.subheader("Step 6: Get Answer")
-        final_question = st.text_input("Enter your final question for Step 6", key="final_question_input")
+        final_question = st.text_input("-> Enter your final question for Step 6", key="final_question_input")
 
         if st.button("Run Step 6: Get Answer"):
             current_question = st.session_state.final_question_input
