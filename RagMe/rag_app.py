@@ -50,8 +50,6 @@ BASE_DEFAULT_PROMPT = (
 )
 
 DEFAULT_VOICE_PROMPT = (
-    "EXTREMELY IMPORTANT: ALWAYS converse in SWISS-GERMAN..!!!!"
-    "\n"
     "For voice mode, please adopt a funny, caricaturized scholarly tone.\n"
     "Ensure your tone remains friendly, conversational, and slightly humorous, yet academically rigorous."
 )
