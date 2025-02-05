@@ -19,26 +19,6 @@ import requests
 from openai import OpenAI
 import shutil
 
-try:
-    import pandas as pd
-except ImportError:
-    st.error("Please install pandas to handle Excel/CSV files.")
-
-try:
-    from PyPDF2 import PdfReader
-except ImportError:
-    st.error("Please install PyPDF2 to handle PDF files.")
-
-try:
-    import docx
-except ImportError:
-    st.error("Please install python-docx to handle DOCX files.")
-
-try:
-    from striprtf.striprtf import rtf_to_text
-except ImportError:
-    st.error("Please install striprtf to handle RTF files (pip install striprtf).")
-
 # Create embedding function that uses OpenAI
 class OpenAIEmbeddingFunction:
     def __init__(self, api_key):
@@ -107,7 +87,7 @@ if 'final_answer' not in st.session_state:
 if 'final_question_step7' not in st.session_state:
     st.session_state.final_question_step7 = ""
 # Use default collection name
-st.session_state.collection_name = "rag_collection"
+st.session_state.collection_name = "demo_collection"
 if 'delete_confirm' not in st.session_state:
     st.session_state.delete_confirm = False
 if 'avm_active' not in st.session_state:
@@ -238,68 +218,6 @@ def embed_text(
         return embedding_data
     return embeddings
 
-def extract_text_from_file(uploaded_file) -> str:
-    """
-    Detects the file type from its extension and extracts text accordingly.
-    """
-    file_name = uploaded_file.name.lower()
-    
-    if file_name.endswith('.txt'):
-        # Text file: decode as UTF-8
-        text = uploaded_file.read().decode("utf-8")
-        
-    elif file_name.endswith('.pdf'):
-        # PDF file: use PyPDF2 to extract text from each page
-        reader = PdfReader(uploaded_file)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-                
-    elif file_name.endswith('.csv'):
-        # CSV file: use pandas to read and convert to string
-        try:
-            df = pd.read_csv(uploaded_file)
-            text = df.to_csv(index=False)
-        except Exception as e:
-            st.error(f"Error reading CSV file: {e}")
-            text = ""
-    
-    elif file_name.endswith('.xlsx'):
-        # Excel file: use pandas to read and convert to CSV string
-        try:
-            df = pd.read_excel(uploaded_file)
-            text = df.to_csv(index=False)
-        except Exception as e:
-            st.error(f"Error reading Excel file: {e}")
-            text = ""
-    
-    elif file_name.endswith('.docx'):
-        # DOCX file: use python-docx to extract text from paragraphs
-        try:
-            doc = docx.Document(uploaded_file)
-            text = "\n".join([para.text for para in doc.paragraphs])
-        except Exception as e:
-            st.error(f"Error reading DOCX file: {e}")
-            text = ""
-    
-    elif file_name.endswith('.rtf'):
-        # RTF file: use striprtf to convert RTF to plain text
-        try:
-            # Read the RTF file as a string. Adjust encoding if necessary.
-            file_contents = uploaded_file.read().decode("utf-8", errors="ignore")
-            text = rtf_to_text(file_contents)
-        except Exception as e:
-            st.error(f"Error reading RTF file: {e}")
-            text = ""
-    
-    else:
-        st.warning("Unsupported file type.")
-        text = ""
-    
-    return text
-
 #######################################################################
 # 5) FULL REACT PIPELINE SNIPPET (WORKING VERSION)
 #######################################################################
@@ -379,11 +297,11 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
             description: "<strong>Step 4: Storage</strong><br>Embeddings are stored in the database.",
             summaryDataExplanation: (data) => `
 <strong>Storage Summary:</strong><br>
-Stored ${data.count} chunks in collection "rag_collection".
+Stored ${data.count} chunks in collection "demo_collection".
             `.trim(),
             dataExplanation: (data) => `
 <strong>Storage Details (Expanded):</strong><br>
-Stored ${data.count} chunks in collection "rag_collection" at ${data.timestamp}.
+Stored ${data.count} chunks in collection "demo_collection" at ${data.timestamp}.
             `.trim()
         },
         query: {
@@ -664,25 +582,9 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
 
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
                              system_instruction: str = (
-                                "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
-                                "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! "
-                                "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
-                                "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.."
-                                "\n\n"
-                                "Be sure to:\n"
-                                "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
-                                "2. Use italics for emphasis or important nuances.\n"
-                                "3. Maintain a clear, layered structure: \n"
-                                "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
-                                "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
-                                "   - Detailed Explanation (doc-based only)\n"
-                                "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in ""[]"".\n"
-                                "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
-                                "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
-                                "6. Answer succinctly and accurately, focusing on the question asked.\n"
-                                "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
-                                "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria."
-                            )):
+                                 "You are a helpful legal assistant. Answer the following query based ONLY on the provided context. "
+                                 "Your answer must begin with a TL;DR summary in bullet points. Then a detailed explanation."
+                             )):
     if new_client is None:
         st.error("OpenAI client not initialized. Provide an API key in the sidebar.")
         st.stop()
@@ -709,7 +611,7 @@ def summarize_context(passages: list[str]) -> str:
 #######################################################################
 # 7) REALTIME VOICE MODE
 #######################################################################
-def get_ephemeral_token(collection_name: str = "rag_collection"):
+def get_ephemeral_token(collection_name: str = "demo_collection"):
     if "api_key" not in st.session_state:
         st.error("OpenAI API key not set.")
         return None
@@ -718,7 +620,7 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
         "Authorization": f"Bearer {st.session_state['api_key']}",
         "Content-Type": "application/json"
     }
-    data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": "coral"} #  `alloy`, `ash`, `ballad`, `coral`, `echo` `sage`, `shimmer`, `verse`
+    data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": "verse"}
     try:
         resp = requests.post(url, headers=headers, json=data)
         resp.raise_for_status()
@@ -858,7 +760,7 @@ def get_realtime_html(token_data: dict) -> str:
 def toggle_avm():
     st.session_state.avm_active = not st.session_state.avm_active
     if st.session_state.avm_active:
-        token_data = get_ephemeral_token("rag_collection")
+        token_data = get_ephemeral_token("demo_collection")
         if token_data:
             st.session_state.voice_html = get_realtime_html(token_data)
         else:
@@ -922,7 +824,7 @@ def main():
             return
 
         # If currently inactive, turn it on
-        token_data = get_ephemeral_token("rag_collection")
+        token_data = get_ephemeral_token("demo_collection")
         if token_data:
             st.session_state.voice_html = get_realtime_html(token_data)
             st.session_state.avm_active = True
@@ -955,28 +857,16 @@ def main():
     
     with col1:
         st.header("Step-by-Step Pipeline Control")
-    
+        
         # Step 1: Upload
         st.subheader("Step 1: Upload")
-        uploaded_files = st.file_uploader(
-            "Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
-            type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
-            accept_multiple_files=True
-        )
-
+        uploaded_file = st.file_uploader("Upload a document (txt, pdf, docx, csv, xlsx)", type=["txt", "pdf", "docx", "csv", "xlsx"])
         if st.button("Run Step 1: Upload"):
-            if uploaded_files:
-                combined_text = ""
-                for uploaded_file in uploaded_files:
-                    text = extract_text_from_file(uploaded_file)
-                    if text:
-                        combined_text += f"\n\n---\n\n{text}"
-                if combined_text:
-                    st.session_state.uploaded_text = combined_text
-                    update_stage('upload', {'content': combined_text, 'size': len(combined_text)})
-                    st.success("Files uploaded and processed!")
-                else:
-                    st.error("No text could be extracted from the uploaded files.")
+            if uploaded_file is not None:
+                text = uploaded_file.read().decode("utf-8")
+                st.session_state.uploaded_text = text
+                update_stage('upload', {'content': text, 'size': len(text)})
+                st.success("File uploaded!")
             else:
                 st.warning("No file selected.")
         
@@ -1006,28 +896,21 @@ def main():
             if st.session_state.chunks and st.session_state.embeddings:
                 ids = [str(uuid.uuid4()) for _ in st.session_state.chunks]
                 metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
-                add_to_chroma_collection("rag_collection", st.session_state.chunks, metadatas, ids)
-                st.success("Data stored in collection 'rag_collection'!")
+                add_to_chroma_collection("demo_collection", st.session_state.chunks, metadatas, ids)
+                st.success("Data stored in collection 'demo_collection'!")
             else:
                 st.warning("Ensure document is uploaded, chunked, and embedded.")
         
         # Step 5: Query Collection
         st.subheader("Step 5: Query Collection")
-
-        # Use a unique key so that the text input's value persists independently.
-        query_text = st.text_input("Enter your query for Step 5", key="query_text_input")
-
+        query_text = st.text_input("Enter your query for Step 5", value=st.session_state.query_text_step5)
         if st.button("Run Step 5: Query Collection"):
-            # Retrieve the current query value from session_state using the unique key.
-            current_query = st.session_state.query_text_input
-            
-            if current_query.strip():
-                # Embed the query and update the stage
-                query_data = embed_text([current_query], update_stage_flag=False, return_data=True)
-                query_data['query'] = current_query
+            if query_text.strip():
+                query_data = embed_text([query_text], update_stage_flag=False, return_data=True)
+                query_data['query'] = query_text
                 update_stage('query', query_data)
                 st.session_state.query_embedding = query_data["embeddings"]
-                st.session_state.query_text_step5 = current_query  # Optionally persist the current query
+                st.session_state.query_text_step5 = query_text
                 st.success("Query vectorized!")
             else:
                 st.warning("Please enter a query.")
@@ -1036,7 +919,7 @@ def main():
         st.subheader("Step 6: Retrieve")
         if st.button("Run Step 6: Retrieve"):
             if st.session_state.query_embedding:
-                passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection")
+                passages, metadata = query_collection(st.session_state.query_text_step5, "demo_collection")
                 st.session_state.retrieved_passages = passages
                 st.session_state.retrieved_metadata = metadata
                 st.success("Relevant passages retrieved!")
@@ -1045,21 +928,15 @@ def main():
         
         # Step 7: Get Answer
         st.subheader("Step 7: Get Answer")
-
-        # Use a unique key for the text input so that its value persists independently.
-        final_question = st.text_input("Enter your final question for Step 7", key="final_question_input")
-
+        final_question = st.text_input("Enter your final question for Step 7", value=st.session_state.final_question_step7)
         if st.button("Run Step 7: Get Answer"):
-            # Retrieve the current value from session state using the unique key.
-            current_question = st.session_state.final_question_input
-            
-            if current_question.strip():
-                # Perform query and generation using the current question.
-                passages, metadata = query_collection(current_question, "rag_collection")
+            if final_question.strip():
+                # First do a new retrieval for this specific question
+                passages, metadata = query_collection(final_question, "demo_collection")
                 if passages:
-                    answer = generate_answer_with_gpt(current_question, passages, metadata)
+                    answer = generate_answer_with_gpt(final_question, passages, metadata)
                     st.session_state.final_answer = answer
-                    st.session_state.final_question_step7 = current_question  # Optional: persist the last used question.
+                    st.session_state.final_question_step7 = final_question
                     st.success("Answer generated!")
                     st.write(answer)
                 else:
