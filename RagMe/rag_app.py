@@ -665,7 +665,7 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
                              system_instruction: str = (
                                 "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
-                                "Your answer must begin with a TL;DR summary in bullet points, followed by a Detailed Explanation—both sections drawing strictly from the RAG regulation document. "
+                                "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! "
                                 "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
                                 "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.."
                                 "\n\n"
@@ -673,9 +673,10 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
                                 "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
                                 "2. Use italics for emphasis or important nuances.\n"
                                 "3. Maintain a clear, layered structure: \n"
+                                "   - High-level, concise instructions to action in the user's case if the user asked for help.\n"
                                 "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
                                 "   - Detailed Explanation (doc-based only)\n"
-                                "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here, you can write all pertinant references in ""[]"".\n"
+                                "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in ""[]"".\n"
                                 "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
                                 "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
                                 "6. Answer succinctly and accurately, focusing on the question asked.\n"
