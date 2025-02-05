@@ -359,7 +359,7 @@ def embed_text(
     return embeddings
 
 
-def extract_text_from_file(uploaded_file) -> str:
+def extract_text_from_file(uploaded_file, reverse=False) -> str:
     file_name = uploaded_file.name.lower()
     if file_name.endswith('.txt'):
         text = uploaded_file.read().decode("utf-8")
@@ -386,7 +386,6 @@ def extract_text_from_file(uploaded_file) -> str:
             text = ""
     elif file_name.endswith('.docx'):
         try:
-            import docx
             doc = docx.Document(uploaded_file)
             text = "\n".join([para.text for para in doc.paragraphs])
         except Exception as e:
@@ -394,7 +393,6 @@ def extract_text_from_file(uploaded_file) -> str:
             text = ""
     elif file_name.endswith('.rtf'):
         try:
-            from striprtf.striprtf import rtf_to_text
             file_contents = uploaded_file.read().decode("utf-8", errors="ignore")
             text = rtf_to_text(file_contents)
         except Exception as e:
@@ -403,6 +401,11 @@ def extract_text_from_file(uploaded_file) -> str:
     else:
         st.warning("Unsupported file type.")
         text = ""
+    
+    if reverse:
+        lines = text.splitlines()
+        text = "\n".join(lines[::-1])
+    
     return text
 
 
@@ -1068,11 +1071,14 @@ def main():
             accept_multiple_files=True
         )
 
+        # In your Step 1: Upload Context block (inside the with col1: section)
+        reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=False)
+
         if st.button("Run Step 1: Upload Context"):
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
-                    text = extract_text_from_file(uploaded_file)
+                    text = extract_text_from_file(uploaded_file, reverse=reverse_text_order)
                     if text:
                         combined_text += f"\n\n---\n\n{text}"
                 if combined_text:
