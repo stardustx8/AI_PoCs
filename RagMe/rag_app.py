@@ -362,7 +362,7 @@ def embed_text(
 def extract_text_from_file(uploaded_file, reverse=False) -> str:
     file_name = uploaded_file.name.lower()
     if file_name.endswith('.txt'):
-        text = uploaded_file.read().decode("utf-8-sig").replace("\r\n", "\n")
+        text = uploaded_file.read().decode("utf-8")
     elif file_name.endswith('.pdf'):
         reader = PdfReader(uploaded_file)
         text = ""
