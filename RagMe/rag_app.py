@@ -1,3 +1,7 @@
+import streamlit as st
+st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
+
+
 import os
 
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
@@ -5,7 +9,6 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-VOICE_INSTRUCTIONS_FILE = "voice_instructions.txt"
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
@@ -93,46 +96,45 @@ DEFAULT_VOICE_PROMPT = (
 ##############################################################################
 # FILE OPERATIONS FOR PROMPTS & VOICE
 ##############################################################################
-def load_custom_prompt():
-    """Load the main system prompt from file, or None if not found."""
-    if os.path.exists(PROMPT_FILE):
-        with open(PROMPT_FILE, "r") as f:
-            return f.read()
+def load_custom_prompt(user_id):
+    path = Path(f"prompts/user_{user_id}_custom_prompt.txt")
+    path.parent.mkdir(exist_ok=True)
+    if path.exists():
+        return path.read_text()
     return None
 
-def save_custom_prompt(prompt: str):
-    """Save the main system prompt to file."""
-    with open(PROMPT_FILE, "w") as f:
-        f.write(prompt)
+def save_custom_prompt(prompt: str, user_id):
+    path = Path(f"prompts/user_{user_id}_custom_prompt.txt")
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(prompt)
 
-def load_voice_pref():
-    """Load the user's selected voice from file, or return 'coral' if not found."""
-    if os.path.exists(VOICE_PREF_FILE):
-        with open(VOICE_PREF_FILE, "r") as f:
-            return f.read().strip()
-    return "coral"  # Default
+def load_voice_pref(user_id):
+    path = Path(f"preferences/user_{user_id}_voice_pref.txt")
+    path.parent.mkdir(exist_ok=True)
+    if path.exists():
+        return path.read_text().strip()
+    return "coral"
 
-def save_voice_pref(voice: str):
-    """Save the currently selected voice to file."""
-    with open(VOICE_PREF_FILE, "w") as f:
-        f.write(voice)
+def save_voice_pref(voice: str, user_id):
+    path = Path(f"preferences/user_{user_id}_voice_pref.txt")
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(voice)
 
-def load_voice_instructions():
-    """Load advanced voice instructions if they exist; otherwise None."""
-    if os.path.exists(VOICE_INSTRUCTIONS_FILE):
-        with open(VOICE_INSTRUCTIONS_FILE, "r") as f:
-            return f.read()
+def load_voice_instructions(user_id):
+    path = Path(f"instructions/user_{user_id}_voice_instructions.txt")
+    path.parent.mkdir(exist_ok=True)
+    if path.exists():
+        return path.read_text()
     return None
 
-def save_voice_instructions(text: str):
-    """Save advanced voice instructions to file."""
-    with open(VOICE_INSTRUCTIONS_FILE, "w") as f:
-        f.write(text)
+def save_voice_instructions(text: str, user_id: str):
+    path = Path(f"instructions/user_{user_id}_voice_instructions.txt")
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text)
 
 
 import chromadb
 from chromadb.config import Settings
-import streamlit as st
 import streamlit.components.v1 as components
 import uuid
 import re
@@ -145,6 +147,11 @@ import unicodedata
 import requests
 from openai import OpenAI
 import shutil
+import hashlib
+import os
+from typing import Optional
+from pathlib import Path
+
 
 try:
     import pandas as pd
@@ -178,16 +185,17 @@ CHROMA_DIRECTORY = "chromadb_storage"
 
 # Initialize ChromaDB with our custom embedding function instance
 def init_chroma_client():
-    if "api_key" not in st.session_state:
+    if "api_key" not in st.session_state or not st.session_state.get("user_id"):
         return None, None
-    global embedding_function_instance
+    
+    user_dir = f"chromadb_storage_user_{st.session_state.user_id}"
+    os.makedirs(user_dir, exist_ok=True)
+    
     embedding_function_instance = OpenAIEmbeddingFunction(st.session_state["api_key"])
-    client = chromadb.Client(
-        Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=CHROMA_DIRECTORY
-        )
-    )
+    client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=user_dir
+    ))
     return client, embedding_function_instance
 
 # Create embedding function that uses OpenAI
@@ -245,14 +253,13 @@ if 'voice_html' not in st.session_state:
 
 # We'll store the selected voice in session state
 if 'selected_voice' not in st.session_state:
-    st.session_state.selected_voice = load_voice_pref()
+    st.session_state.selected_voice = load_voice_pref(st.session_state.user_id) if st.session_state.get('user_id') else "coral"
 
 # We'll store advanced voice instructions in session_state
-# We'll store advanced voice instructions in session_state
 if 'voice_custom_prompt' not in st.session_state:
-    loaded_voice_instructions = load_voice_instructions()
+    loaded_voice_instructions = load_voice_instructions(st.session_state.user_id) if st.session_state.get('user_id') else None
     st.session_state.voice_custom_prompt = (
-        loaded_voice_instructions if loaded_voice_instructions and loaded_voice_instructions.strip() != "" 
+        loaded_voice_instructions if loaded_voice_instructions and loaded_voice_instructions.strip() != ""
         else DEFAULT_VOICE_PROMPT
     )
 
@@ -444,7 +451,7 @@ def extract_text_from_file(uploaded_file, reverse=False) -> str:
 
 
 ##############################################################################
-# 5) FULL REACT PIPELINE SNIPPET (WORKING VERSION)
+# 5) FULL REACT PIPELINE SNIPPET
 ##############################################################################
 def get_pipeline_component(component_args):
     html_template = """
@@ -856,7 +863,7 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
         st.json(token_data)
         return None
     except requests.exceptions.RequestException as e:
-        st.error(f"Failed to create realtime session: {str(e)}")
+        st.error(f"Failed to create voice session: {str(e)}")
         if hasattr(e.response, 'text'):
             st.write("Error response:", e.response.text)
         return None
@@ -993,11 +1000,105 @@ def toggle_avm():
 
 
 ##############################################################################
-# 8) MAIN STREAMLIT APP
+# 8) USER AUTHENTICATION
 ##############################################################################
+
+def create_user_session():
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = None
+        st.session_state.is_authenticated = False
+
+def get_user_specific_directory(user_id: str) -> str:
+    """Create unique ChromaDB directory for each user"""
+    hashed_id = hashlib.sha256(user_id.encode()).hexdigest()[:10]
+    return f"chromadb_storage_user_{hashed_id}"
+
+def load_users():
+    user_file = Path("users.json")
+    if not user_file.exists():
+        return {"admin": "admin"}  # Default admin account
+    return json.loads(user_file.read_text())
+
+def save_users(users):
+    Path("users.json").write_text(json.dumps(users))
+
+def create_account(username, password):
+    users = load_users()
+    if username in users:
+        return False, "Username already exists"
+    users[username] = password
+    save_users(users)
+    return True, "Account created successfully"
+
+def verify_login(username, password):
+    users = load_users()
+    return username in users and users[username] == password
+
+
+##############################################################################
+# o) MAIN STREAMLIT APP
+##############################################################################
+
 def main():
     global chroma_client
-    st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
+
+    # Authentication
+    create_user_session()
+
+    with st.sidebar:
+        st.header("User Authentication")
+        if not st.session_state.is_authenticated:
+            tab1, tab2 = st.tabs(["Login", "Create Account"])
+            
+            with tab1:
+                username = st.text_input("Username", key="login_user")
+                password = st.text_input("Password", type="password", key="login_pass")
+                if st.button("Login"):
+                    if verify_login(username, password):
+                        st.session_state.user_id = username
+                        st.session_state.is_authenticated = True
+                        st.rerun()
+                    else:
+                        st.error("Invalid credentials")
+
+            with tab2:
+                new_username = st.text_input("New Username", key="new_user")
+                new_password = st.text_input("New Password", type="password", key="new_pass")
+                if st.button("Create Account"):
+                    success, msg = create_account(new_username, new_password)
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+
+        else:
+            st.success(f"Logged in as {st.session_state.user_id}")
+            if st.button("Logout"):
+                # Clear user auth
+                st.session_state.user_id = None
+                st.session_state.is_authenticated = False
+                
+                # Clear pipeline data
+                for stage in ['upload', 'chunk', 'embed', 'store', 'query', 'retrieve', 'generate']:
+                    if f'{stage}_data' in st.session_state:
+                        st.session_state[f'{stage}_data'] = None
+                        
+                # Clear other data
+                st.session_state.uploaded_text = None
+                st.session_state.chunks = None
+                st.session_state.embeddings = None
+                st.session_state.retrieved_passages = []
+                st.session_state.retrieved_metadata = []
+                st.session_state.final_answer = None
+                st.session_state.current_stage = None  # This resets stage colors
+
+                st.rerun()
+
+    # Only show main app if authenticated
+    if not st.session_state.is_authenticated:
+        st.warning("Please log in to use the RAG system")
+        return
+
     st.markdown("""
         <style>
         .main { padding: 2rem; }
@@ -1005,7 +1106,7 @@ def main():
         [data-testid="column"] { width: calc(100% + 2rem); margin-left: -1rem; }
         </style>
     """, unsafe_allow_html=True)
-    st.title("RAG + Realtime Voice Demo")
+    st.title("RAG + Advanced Voice Mode (AVM) Cockpit")
     
     # Sidebar: API key and force recreate option
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
@@ -1075,36 +1176,35 @@ def main():
         
         # --- Step 0: Voice selection & Prompting ---
         st.subheader("Step 0: Specify Initial Instructions & Voice")
-
+            
         # Voice selection
         VOICE_OPTIONS = ["alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"]
+        current_voice = load_voice_pref(st.session_state.user_id)
         selected_voice = st.selectbox(
             "-> Choose a voice for advanced voice mode:",
             options=VOICE_OPTIONS,
-            index=VOICE_OPTIONS.index(st.session_state.selected_voice) if st.session_state.selected_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
+            index=VOICE_OPTIONS.index(current_voice) if current_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
         )
-        st.session_state.selected_voice = selected_voice
-        # Save selected voice to persist
-        save_voice_pref(selected_voice)
 
-        # Show main system instructions text area
-        loaded_prompt = load_custom_prompt() or BASE_DEFAULT_PROMPT
+        # Main system instructions text area
+        loaded_prompt = load_custom_prompt(st.session_state.user_id) or BASE_DEFAULT_PROMPT
         custom_prompt = st.text_area(
             "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
             value=loaded_prompt
         )
-        # Auto-save whenever text area changes
-        st.session_state.custom_prompt = custom_prompt
-        save_custom_prompt(custom_prompt)
+        if custom_prompt != loaded_prompt:
+            st.session_state.custom_prompt = custom_prompt
+            save_custom_prompt(custom_prompt, st.session_state.user_id)
 
-        # Advanced voice instructions: auto-save also
-        loaded_voice_instructions = st.session_state.voice_custom_prompt
+        # Voice instructions text area
+        loaded_voice_instructions = load_voice_instructions(st.session_state.user_id)
         voice_instructions = st.text_area(
             "-> Customize your advanced voice mode voice & tone. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
-            value=loaded_voice_instructions
+            value=loaded_voice_instructions if loaded_voice_instructions else DEFAULT_VOICE_PROMPT
         )
-        st.session_state.voice_custom_prompt = voice_instructions
-        save_voice_instructions(voice_instructions)
+        if voice_instructions != loaded_voice_instructions:
+            st.session_state.voice_custom_prompt = voice_instructions
+            save_voice_instructions(voice_instructions, st.session_state.user_id)
 
         # --- Step 1: Upload Context ---
         st.subheader("Step 1: Upload Context")
@@ -1118,6 +1218,7 @@ def main():
         reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=True)
 
         if st.button("Run Step 1: Upload Context"):
+            st.session_state.uploaded_file = None
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
