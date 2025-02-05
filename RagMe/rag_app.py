@@ -3,6 +3,18 @@ import os
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
+PROMPT_FILE = "custom_prompt.txt"
+
+def load_custom_prompt():
+    if os.path.exists(PROMPT_FILE):
+        with open(PROMPT_FILE, "r") as f:
+            return f.read()
+    return None
+
+def save_custom_prompt(prompt: str):
+    with open(PROMPT_FILE, "w") as f:
+        f.write(prompt)
+
 import chromadb
 from chromadb.config import Settings
 import streamlit as st
@@ -318,7 +330,7 @@ def get_pipeline_component(component_args):
         upload: {
             title: "Document Upload & Processing",
             icon: '📁',
-            description: "<strong>Step 1: Gather Your Raw Material</strong><br>We begin by taking the text exactly as you provided and processing it.",
+            description: "<strong>Step 1: Loading Your Source Text</strong><br>We simply take your file(s) as is, storing them until you're ready to process. This way, you can upload multiple documents before anything happens—no immediate transformation. It’s all about collecting the raw materials first!",
             summaryDataExplanation: (data) => `
 <strong>Upload Summary:</strong><br>
 Received ~${data.size || 'N/A'} characters.<br>
@@ -334,7 +346,7 @@ ${data.full || data.preview || 'No content available.'}
         chunk: {
             title: "Text Chunking",
             icon: '✂️',
-            description: "<strong>Step 2: Slicing Content</strong><br>Your text is divided into segments.",
+            description: "<strong>Step 2: Cutting the Text into Slices</strong><br>Once you're ready, each uploaded text is broken into manageable chunks. This segmentation helps the system handle longer documents more effectively while preserving meaning within each slice.",
             summaryDataExplanation: (data) => `
 <strong>Chunk Breakdown (Summary):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
@@ -350,7 +362,7 @@ ${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="c
         embed: {
             title: "Vector Embedding Generation",
             icon: '🧠',
-            description: "<strong>Step 3: Embedding Generation</strong><br>Each chunk is converted into a vector.",
+            description: "<strong>Step 3: Transforming Chunks into High-Dimensional Vectors</strong><br>Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context. We can visualize these embeddings (imagine a giant 3D cloud of points) where similar tokens or phrases cluster together—like red 'Hello, AI!' tokens standing out among greyer neighbors.",
             summaryDataExplanation: (data) => `
 <strong>Embedding Stats (Summary):</strong><br>
 Dimensions: ${data.dimensions}<br>
@@ -376,7 +388,7 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
         store: {
             title: "Vector Database Storage",
             icon: '🗄️',
-            description: "<strong>Step 4: Storage</strong><br>Embeddings are stored in the database.",
+            description: "<strong>Step 4: Archiving Embeddings in ChromaDB</strong><br>After embedding, we place these vectors into a vector database. Later, we can search or retrieve whichever chunk best fits your query by simply comparing these vectors. Think of it like a high-tech library where each book is labeled by thousands of numeric 'keywords.'",
             summaryDataExplanation: (data) => `
 <strong>Storage Summary:</strong><br>
 Stored ${data.count} chunks in collection "rag_collection".
@@ -389,7 +401,9 @@ Stored ${data.count} chunks in collection "rag_collection" at ${data.timestamp}.
         query: {
             title: "Query Collection",
             icon: '❓',
-            description: "<strong>Step 5: Query Collection</strong><br>Your query is embedded into a vector.",
+            description: "<strong>Step 5A: Transforming Chunks into High-Dimensional Vectors</strong><br>\
+Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context.<br><br>\
+For example, consider the word <strong>Switzerland</strong>. It might appear as a 3,000-dimensional vector like [0.642, -0.128, 0.945, ...]. In this snippet, <em>dimension 1</em> (0.642) may reflect geography (mountains, lakes), <em>dimension 2</em> (-0.128) might capture linguistic influences, and <em>dimension 3</em> (0.945) could encode economic traits—such as stability or robust banking. A higher value (e.g., 0.945) indicates a stronger correlation with that dimension's learned feature (in this case, 'economic stability'), whereas lower or negative values signal weaker or contrasting associations. Across thousands of dimensions, these numeric signals combine into a richly layered portrait of meaning.",
             summaryDataExplanation: (data) => `
 <strong>Query Vectorization:</strong><br>
 Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
@@ -411,7 +425,7 @@ Full Token Breakdown: ${ data.token_breakdowns ? data.token_breakdowns.map((chun
         retrieve: {
             title: "Context Retrieval",
             icon: '🔎',
-            description: "<strong>Step 6: Retrieve Chunks</strong><br>We retrieve the most similar chunks.",
+            description: "<strong>Step 5B: Finding Matching Passages</strong><br>The query vector is matched against every vector in the database. The passages with the highest similarity (closest in vector-space) pop up as potential answers. For example, if your query is 'Ibach' (a Swiss village), the system might rank passages mentioning 'Switzerland' quite highly, given they share geographical or contextual features in the embedding space.",
             summaryDataExplanation: (data) => `
 <strong>Top Matches (Summary):</strong><br>
 ${ data.passages.map((passage, i) => `<br><span style='color:red;font-weight:bold;'>Match ${i+1}:</span> "${passage}" (score ~ ${(data.scores[i]*100).toFixed(1)}%)`).join("<br>") }
@@ -425,7 +439,7 @@ ${ data.passages.map((passage, i) => `<strong>Match ${i+1} (score ${(data.scores
         generate: {
             title: "Get Answer",
             icon: '🤖',
-            description: "<strong>Step 7: Get Answer</strong><br>Your final question and retrieved chunks generate an answer.",
+            description: "<strong>Step 6: Using GPT to Combine Context & Query</strong><br>Finally, GPT takes both the query and the top retrieved chunks to generate a focused answer. It's like feeding in a question and its best context, ensuring the result zeroes in on the exact info relevant to your needs.",
             summaryDataExplanation: (data) => `
 <strong>Answer (Summary):</strong><br>
 ${ data.answer ? data.answer.substring(0, Math.floor(data.answer.length/2))+"..." : "No answer yet" }
@@ -663,35 +677,44 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
     return retrieved_passages, retrieved_metadata
 
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
-                             system_instruction: str = (
-                                "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
-                                "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! "
-                                "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
-                                "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.."
-                                "\n\n"
-                                "Be sure to:\n"
-                                "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
-                                "2. Use italics for emphasis or important nuances.\n"
-                                "3. Maintain a clear, layered structure: \n"
-                                "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
-                                "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
-                                "   - Detailed Explanation (doc-based only)\n"
-                                "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in ""[]"".\n"
-                                "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
-                                "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
-                                "6. Answer succinctly and accurately, focusing on the question asked.\n"
-                                "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
-                                "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria."
-                            )):
+                             system_instruction: str = None):
+    if system_instruction is None:
+        # Retrieve the custom prompt from session state, falling back to a default if not set.
+        system_instruction = st.session_state.get("custom_prompt", 
+            "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
+            "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! "
+            "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
+            "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc..\n\n"
+            "Be sure to:\n"
+            "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
+            "2. Use italics for emphasis or important nuances.\n"
+            "3. Maintain a clear, layered structure: \n"
+            "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
+            "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
+            "   - Detailed Explanation (doc-based only)\n"
+            "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in \"[]\".\n"
+            "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
+            "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
+            "6. Answer succinctly and accurately, focusing on the question asked.\n"
+            "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
+            "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria.\n"
+            "EXTREMELY IMPORTANT: If the document you were provided with in the context does not explicitly say something about the user's request: unconditionally say:\n"
+            "The uploaded document states nothing relevant according to your query..' in slightly bigger text size in red but add some sarcastic, very funny joking interpretations as to how the query could be related to the document context and introduce this funny section by 'The fun part (explicitly requested in Step 0 to accentuate how output can be steered)' in normal text size and use emojis for the text body"
+        )
+    
     if new_client is None:
         st.error("OpenAI client not initialized. Provide an API key in the sidebar.")
         st.stop()
+    
     context_text = "\n\n".join(retrieved_passages)
+    
+    # Build the final prompt by combining the system instruction (custom prompt) with the context.
     final_prompt = (
         f"{system_instruction}\n\n"
         f"Context:\n{context_text}\n\n"
         f"User Query: {query}\nAnswer:"
     )
+    
     completion = new_client.chat.completions.create(
         model="chatgpt-4o-latest",
         messages=[{"role": "user", "content": final_prompt}],
@@ -741,39 +764,16 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
         return None
 
 def get_realtime_html(token_data: dict) -> str:
-    # Retrieve the collection and all documents.
     coll = create_or_load_collection(token_data['collection'])
     all_docs = coll.get()
     all_passages = all_docs.get("documents", [])
-    
-    # Compute the document summary (this now returns the full text).
     doc_summary = summarize_context(all_passages)
     
-    # Define a custom prompt prefix.
-    prompt_prefix = (
-        "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). \n"
-        "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! \n"
-        "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, \n"
-        "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.. \n"
-        "\n\n"
-        "Be sure to:\n"
-        "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
-        "2. Use italics for emphasis or important nuances.\n"
-        "3. Maintain a clear, layered structure: \n"
-        "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
-        "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
-        "   - Detailed Explanation (doc-based only)\n"
-        "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in \"[]\".\n"
-        "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
-        "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
-        "6. Answer succinctly and accurately, focusing on the question asked.\n"
-        "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
-        "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria.\n"
-    )
-    # Concatenate the prompt prefix with the document summary.
-    full_prompt = prompt_prefix + doc_summary
+    # Use the custom prompt provided by the user if it exists.
+    prompt_prefix = st.session_state.get("custom_prompt", "You are a helpful assistant. Use the following context to answer user queries:\n")
     
-    # **Store the full prompt in session state** so you can inspect it.
+    # Concatenate the custom prompt with the document summary.
+    full_prompt = prompt_prefix + "\n" + doc_summary
     st.session_state.avm_initial_text = full_prompt
 
     realtime_js = f"""
@@ -800,7 +800,6 @@ def get_realtime_html(token_data: dict) -> str:
         const dc = pc.createDataChannel("events");
         dc.onopen = () => {{
             statusDiv.innerText = "AVM active";
-            // **Send the complete prompt (prompt prefix + context) to AVM**
             dc.send(JSON.stringify({{
                 type: "session.update",
                 session: {{ instructions: `{full_prompt}` }}
@@ -963,16 +962,46 @@ def main():
     
     with col1:
         st.header("Step-by-Step Pipeline Control")
-    
-        # Step 1: Upload
-        st.subheader("Step 1: Upload")
+        
+        # --- Step 0: Specify Initial Instructions ---
+        st.subheader("Step 0: Specify Initial Instructions")
+        default_prompt = load_custom_prompt() or (
+            "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
+            "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! "
+            "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
+            "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc..\n\n"
+            "Be sure to:\n"
+            "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
+            "2. Use italics for emphasis or important nuances.\n"
+            "3. Maintain a clear, layered structure: \n"
+            "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
+            "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
+            "   - Detailed Explanation (doc-based only)\n"
+            "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in \"[]\".\n"
+            "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
+            "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
+            "6. Answer succinctly and accurately, focusing on the question asked.\n"
+            "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
+            "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria.\n"
+            "EXTREMELY IMPORTANT: If the document you were provided with in the context does not explicitly say something about the user's request: unconditionally say:\n"
+            "The uploaded document states nothing relevant according to your query..', then try as good as possible to relate the user's request to the content, stating that you're guessing the user's intent. In slightly bigger text size in red but add some sarcastic, very funny joking interpretations as to how the query could be related to the document context and introduce this funny section by 'The fun part (explicitly requested in Step 0 to accentuate how output can be steered)' in normal text size and use emojis for the text body"
+        )
+        # Create a text area so the user can edit or provide their own prompt.
+        custom_prompt = st.text_area("Enter your custom initial instructions ('System Instructions') for voice- & text mode. Deleting the contents of this box & refreshing your browser restores a default prompt.", value=default_prompt)
+        st.session_state.custom_prompt = custom_prompt
+
+        # Save the prompt when it is updated
+        save_custom_prompt(custom_prompt)
+
+        # --- Continue with Step 1: Upload Context ---
+        st.subheader("Step 1: Upload Context")
         uploaded_files = st.file_uploader(
             "Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
             type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
             accept_multiple_files=True
-        )
+    )
 
-        if st.button("Run Step 1: Upload"):
+        if st.button("Run Step 1: Upload Context"):
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
@@ -988,19 +1017,19 @@ def main():
             else:
                 st.warning("No file selected.")
         
-        # Step 2: Chunk
-        st.subheader("Step 2: Chunk")
-        if st.button("Run Step 2: Chunk"):
+        # Step 2: Chunk Context
+        st.subheader("Step 2: Chunk Context")
+        if st.button("Run Step 2: Chunk Context"):
             if st.session_state.uploaded_text:
                 chunks = split_text_into_chunks(st.session_state.uploaded_text)
                 st.session_state.chunks = chunks
                 st.success(f"Text chunked into {len(chunks)} segments.")
             else:
-                st.warning("Please upload a document first.")
+                st.warning("Please upload min. 1 document first.")
         
-        # Step 3: Embed
-        st.subheader("Step 3: Embed")
-        if st.button("Run Step 3: Embed"):
+        # Step 3: Embed Context
+        st.subheader("Step 3: Embed Context")
+        if st.button("Run Step 3: Embed Context"):
             if st.session_state.chunks:
                 embedding_data = embed_text(st.session_state.chunks, update_stage_flag=True, return_data=True)
                 st.session_state.embeddings = embedding_data
@@ -1009,23 +1038,23 @@ def main():
                 st.warning("Please chunk the document first.")
         
         # Step 4: Store
-        st.subheader("Step 4: Store")
-        if st.button("Run Step 4: Store"):
+        st.subheader("Step 4: Store Embedded Context")
+        if st.button("Run Step 4: Store Embedded Context"):
             if st.session_state.chunks and st.session_state.embeddings:
                 ids = [str(uuid.uuid4()) for _ in st.session_state.chunks]
                 metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
                 add_to_chroma_collection("rag_collection", st.session_state.chunks, metadatas, ids)
-                st.success("Data stored in collection 'rag_collection'!")
+                st.success("Data stored in data collection 'rag_collection'!")
             else:
                 st.warning("Ensure document is uploaded, chunked, and embedded.")
         
-        # Step 5: Query Collection
-        st.subheader("Step 5: Query Collection")
+        # Step 5A: Embed Query (Optional)
+        st.subheader("Step 5A: Embed Query (Optional)")
 
         # Use a unique key so that the text input's value persists independently.
-        query_text = st.text_input("Enter your query for Step 5", key="query_text_input")
+        query_text = st.text_input("Enter a query to see how is embedded into vectors", key="query_text_input")
 
-        if st.button("Run Step 5: Query Collection"):
+        if st.button("Run Step 5A: Embed Query"):
             # Retrieve the current query value from session_state using the unique key.
             current_query = st.session_state.query_text_input
             
@@ -1040,24 +1069,24 @@ def main():
             else:
                 st.warning("Please enter a query.")
         
-        # Step 6: Retrieve
-        st.subheader("Step 6: Retrieve")
-        if st.button("Run Step 6: Retrieve"):
+        # Step 5B: Retrieve Query Embeddings (Optional)
+        st.subheader("Step 5B: Retrieve Matching Chunks (Optional)")
+        if st.button("Run Step 5B: Retrieve Matching Chunks"):
             if st.session_state.query_embedding:
                 passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection")
                 st.session_state.retrieved_passages = passages
                 st.session_state.retrieved_metadata = metadata
-                st.success("Relevant passages retrieved!")
+                st.success("Relevant chunks retrieved based on your query in Step 5A!")
             else:
-                st.warning("Run Step 5 (Query Collection) first.")
+                st.warning("Run Step 5A (Embed Query) first.")
         
-        # Step 7: Get Answer
-        st.subheader("Step 7: Get Answer")
+        # Step 6: Get Answer
+        st.subheader("Step 6: Get Answer")
 
         # Use a unique key for the text input so that its value persists independently.
-        final_question = st.text_input("Enter your final question for Step 7", key="final_question_input")
+        final_question = st.text_input("Enter your final question for Step 6", key="final_question_input")
 
-        if st.button("Run Step 7: Get Answer"):
+        if st.button("Run Step 6: Get Answer"):
             # Retrieve the current value from session state using the unique key.
             current_question = st.session_state.final_question_input
             
