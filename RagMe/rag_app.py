@@ -675,7 +675,7 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
                                 "3. Maintain a clear, layered structure: \n"
                                 "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
                                 "   - Detailed Explanation (doc-based only)\n"
-                                "   - Other references (your additional knowledge or commentary)\n"
+                                "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here, you can write all pertinant references in ""[]"".\n"
                                 "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
                                 "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
                                 "6. Answer succinctly and accurately, focusing on the question asked.\n"
