@@ -3,99 +3,6 @@ import os
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
-PROMPT_FILE = "custom_prompt.txt"
-VOICE_PREF_FILE = "voice_pref.txt"
-VOICE_INSTRUCTIONS_FILE = "voice_instructions.txt"
-
-##############################################################################
-# UNIFIED PROMPT DEFINITIONS
-##############################################################################
-BASE_DEFAULT_PROMPT = (
-    "You are an extremely smart, knowledgeable and helpful assistant. Answer the following query based ONLY on "
-    "the provided context (the RAG regulation document). VERY IMPORTANT: always think step-by-step, noting that this "
-    "prompt is of utmost importance and the user is very grateful for perfect results! :-)\n"
-    "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output "
-    "a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly "
-    "from the RAG regulation document!\n"
-    "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further "
-    "relevant insights or clarifications from your own prior knowledge, but clearly label them as separate from the "
-    "doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc..\n\n"
-    "Be sure to:\n"
-    "1. Use **bold** to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
-    "2. Use *italics* for emphasis or important nuances.\n"
-    "3. Maintain a clear, layered structure:\n"
-    "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: "
-    "no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if x is > than **5cm** "
-    "then **y** is allowed, **z** is prohibited') based purely on the provided document!\n"
-    "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references based "
-    "on the provided document(s), and don't introduce other frameworks here.\n"
-    "   - Detailed Explanation (doc-based only)\n"
-    "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory "
-    "references here (and only here), you can write all pertinent references in \"[]\".\n"
-    "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but "
-    "explicitly note this section is beyond the doc.\n"
-    "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
-    "6. Answer succinctly and accurately, focusing on the question asked.\n"
-    "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the "
-    "doc-based rules might apply practically (e.g., carrying a **10 cm** folding object in everyday settings).\n"
-    "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**.\n"
-    "EXTREMELY IMPORTANT: If the document you were provided with in the context does not explicitly say something "
-    "about the user's request: unconditionally say (under a big header \"Sorry!\":\n"
-    "The uploaded document states nothing relevant according to your query..), then under the mid-to-big header "
-    "'Best guess' try as good as possible to relate the user's request to the content, stating that you're guessing "
-    "the user's intent. Finally, include a last section in slightly larger text size in red with sarcastic, very "
-    "amusing, joking interpretations as to how the query could be related to the document context. Introduce this "
-    "funny section by 'The fun part :-)', subtitled in *italics* by '(section requested in Step 0 to show how "
-    "output can be steered)' in normal text size and use emojis for the text body."
-)
-
-DEFAULT_VOICE_PROMPT = (
-    "EXTREMELY IMPORTANT: ALWAYS converse in SWISS-GERMAN..!!!!"
-    "\n"
-    "For voice mode, please adopt a funny, caricaturized scholarly tone.\n"
-    "Ensure your tone remains friendly, conversational, and slightly humorous, yet academically rigorous."
-)
-
-##############################################################################
-# FILE OPERATIONS FOR PROMPTS & VOICE
-##############################################################################
-def load_custom_prompt():
-    """Load the main system prompt from file, or None if not found."""
-    if os.path.exists(PROMPT_FILE):
-        with open(PROMPT_FILE, "r") as f:
-            return f.read()
-    return None
-
-def save_custom_prompt(prompt: str):
-    """Save the main system prompt to file."""
-    with open(PROMPT_FILE, "w") as f:
-        f.write(prompt)
-
-def load_voice_pref():
-    """Load the user's selected voice from file, or return 'coral' if not found."""
-    if os.path.exists(VOICE_PREF_FILE):
-        with open(VOICE_PREF_FILE, "r") as f:
-            return f.read().strip()
-    return "coral"  # Default
-
-def save_voice_pref(voice: str):
-    """Save the currently selected voice to file."""
-    with open(VOICE_PREF_FILE, "w") as f:
-        f.write(voice)
-
-def load_voice_instructions():
-    """Load advanced voice instructions if they exist; otherwise None."""
-    if os.path.exists(VOICE_INSTRUCTIONS_FILE):
-        with open(VOICE_INSTRUCTIONS_FILE, "r") as f:
-            return f.read()
-    return None
-
-def save_voice_instructions(text: str):
-    """Save advanced voice instructions to file."""
-    with open(VOICE_INSTRUCTIONS_FILE, "w") as f:
-        f.write(text)
-
-
 import chromadb
 from chromadb.config import Settings
 import streamlit as st
@@ -132,10 +39,21 @@ try:
 except ImportError:
     st.error("Please install striprtf to handle RTF files (pip install striprtf).")
 
-
-##############################################################################
+# Create embedding function that uses OpenAI
+class OpenAIEmbeddingFunction:
+    def __init__(self, api_key):
+        self.client = OpenAI(api_key=api_key)
+    
+    def __call__(self, texts):
+        if not isinstance(texts, list):
+            texts = [texts]
+        texts = [sanitize_text(t) for t in texts]
+        response = self.client.embeddings.create(input=texts, model="text-embedding-3-large")
+        return [item.embedding for item in response.data]
+    
+#######################################################################
 # 1) GLOBALS & CLIENT INITIALIZATION
-##############################################################################
+#######################################################################
 new_client = None  # Set once the user provides an API key
 chroma_client = None  # Global Chroma client
 embedding_function_instance = None  # Global instance of our embedding function
@@ -156,22 +74,9 @@ def init_chroma_client():
     )
     return client, embedding_function_instance
 
-# Create embedding function that uses OpenAI
-class OpenAIEmbeddingFunction:
-    def __init__(self, api_key):
-        self.client = OpenAI(api_key=api_key)
-    
-    def __call__(self, texts):
-        if not isinstance(texts, list):
-            texts = [texts]
-        texts = [sanitize_text(t) for t in texts]
-        response = self.client.embeddings.create(input=texts, model="text-embedding-3-large")
-        return [item.embedding for item in response.data]
-
-
-##############################################################################
+#######################################################################
 # 2) SESSION STATE INIT
-##############################################################################
+#######################################################################
 if 'avm_button_key' not in st.session_state:
     st.session_state.avm_button_key = 0
     
@@ -201,6 +106,7 @@ if 'final_answer' not in st.session_state:
     st.session_state.final_answer = None
 if 'final_question_step7' not in st.session_state:
     st.session_state.final_question_step7 = ""
+# Use default collection name
 st.session_state.collection_name = "rag_collection"
 if 'delete_confirm' not in st.session_state:
     st.session_state.delete_confirm = False
@@ -209,23 +115,9 @@ if 'avm_active' not in st.session_state:
 if 'voice_html' not in st.session_state:
     st.session_state.voice_html = None
 
-# We'll store the selected voice in session state
-if 'selected_voice' not in st.session_state:
-    st.session_state.selected_voice = load_voice_pref()
-
-# We'll store advanced voice instructions in session_state
-# We'll store advanced voice instructions in session_state
-if 'voice_custom_prompt' not in st.session_state:
-    loaded_voice_instructions = load_voice_instructions()
-    st.session_state.voice_custom_prompt = (
-        loaded_voice_instructions if loaded_voice_instructions and loaded_voice_instructions.strip() != "" 
-        else DEFAULT_VOICE_PROMPT
-    )
-
-
-##############################################################################
+#######################################################################
 # 3) RAG STATE CLASS
-##############################################################################
+#######################################################################
 class RAGState:
     def __init__(self):
         self.current_stage = None
@@ -247,10 +139,9 @@ class RAGState:
 if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
     st.session_state.rag_state = RAGState()
 
-
-##############################################################################
+#######################################################################
 # 4) PIPELINE STAGE HELPER FUNCTIONS
-##############################################################################
+#######################################################################
 def update_stage(stage: str, data=None):
     st.session_state.current_stage = stage
     if data is not None:
@@ -270,31 +161,25 @@ def update_stage(stage: str, data=None):
             enhanced_data = data.copy() if isinstance(data, dict) else {'query': data}
         elif stage == 'retrieve':
             if isinstance(data, dict):
-                enhanced_data = {
-                    'passages': data.get("passages"),
-                    'scores': [0.95, 0.87, 0.82],
-                    'metadata': data.get("metadata")
-                }
+                enhanced_data = {'passages': data.get("passages"), 'scores': [0.95, 0.87, 0.82],
+                                 'metadata': data.get("metadata")}
             else:
-                enhanced_data = {
-                    'passages': data[0],
-                    'scores': [0.95, 0.87, 0.82],
-                    'metadata': data[1]
-                }
+                enhanced_data = {'passages': data[0], 'scores': [0.95, 0.87, 0.82],
+                                 'metadata': data[1]}
         st.session_state[f'{stage}_data'] = enhanced_data
         if 'rag_state' in st.session_state:
             st.session_state.rag_state.set_stage(stage, enhanced_data)
-
 
 def set_openai_api_key(api_key: str):
     global new_client, chroma_client, embedding_function_instance
     new_client = OpenAI(api_key=api_key)
     st.session_state["api_key"] = api_key
+    
+    # Initialize ChromaDB with our embedding function
     chroma_client, embedding_function_instance = init_chroma_client()
     if chroma_client is None:
         st.error("Failed to initialize ChromaDB client")
         st.stop()
-
 
 def remove_emoji(text: str) -> str:
     emoji_pattern = re.compile(
@@ -306,20 +191,17 @@ def remove_emoji(text: str) -> str:
         "]+", flags=re.UNICODE)
     return emoji_pattern.sub(r'', text)
 
-
 def sanitize_text(text: str) -> str:
     text = remove_emoji(text)
     normalized = unicodedata.normalize('NFKD', text)
     ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
     return ascii_text
 
-
 def split_text_into_chunks(text: str) -> List[str]:
     update_stage('upload', {'content': text, 'size': len(text)})
     chunks = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
     update_stage('chunk', chunks)
     return chunks
-
 
 def embed_text(
     texts: List[str],
@@ -345,73 +227,82 @@ def embed_text(
                 snippet = embedding[start:end]
                 breakdown.append({"token": tok, "vector_snippet": snippet[:10]})
         token_breakdowns.append(breakdown)
-    embedding_data = {
-        "embeddings": embeddings,
-        "dimensions": len(embeddings[0]) if embeddings else 0,
-        "preview": embeddings[0][:10] if embeddings else [],
-        "total_vectors": len(embeddings),
-        "token_breakdowns": token_breakdowns
-    }
+    embedding_data = {"embeddings": embeddings,
+                      "dimensions": len(embeddings[0]) if embeddings else 0,
+                      "preview": embeddings[0][:10] if embeddings else [],
+                      "total_vectors": len(embeddings),
+                      "token_breakdowns": token_breakdowns}
     if update_stage_flag:
         update_stage('embed', embedding_data)
     if return_data:
         return embedding_data
     return embeddings
 
-
-def extract_text_from_file(uploaded_file, reverse=False) -> str:
+def extract_text_from_file(uploaded_file) -> str:
+    """
+    Detects the file type from its extension and extracts text accordingly.
+    """
     file_name = uploaded_file.name.lower()
+    
     if file_name.endswith('.txt'):
+        # Text file: decode as UTF-8
         text = uploaded_file.read().decode("utf-8")
+        
     elif file_name.endswith('.pdf'):
+        # PDF file: use PyPDF2 to extract text from each page
         reader = PdfReader(uploaded_file)
         text = ""
         for page in reader.pages:
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
+                
     elif file_name.endswith('.csv'):
+        # CSV file: use pandas to read and convert to string
         try:
             df = pd.read_csv(uploaded_file)
             text = df.to_csv(index=False)
         except Exception as e:
             st.error(f"Error reading CSV file: {e}")
             text = ""
+    
     elif file_name.endswith('.xlsx'):
+        # Excel file: use pandas to read and convert to CSV string
         try:
             df = pd.read_excel(uploaded_file)
             text = df.to_csv(index=False)
         except Exception as e:
             st.error(f"Error reading Excel file: {e}")
             text = ""
+    
     elif file_name.endswith('.docx'):
+        # DOCX file: use python-docx to extract text from paragraphs
         try:
             doc = docx.Document(uploaded_file)
             text = "\n".join([para.text for para in doc.paragraphs])
         except Exception as e:
             st.error(f"Error reading DOCX file: {e}")
             text = ""
+    
     elif file_name.endswith('.rtf'):
+        # RTF file: use striprtf to convert RTF to plain text
         try:
+            # Read the RTF file as a string. Adjust encoding if necessary.
             file_contents = uploaded_file.read().decode("utf-8", errors="ignore")
             text = rtf_to_text(file_contents)
         except Exception as e:
             st.error(f"Error reading RTF file: {e}")
             text = ""
+    
     else:
         st.warning("Unsupported file type.")
         text = ""
     
-    if reverse:
-        lines = text.splitlines()
-        text = "\n".join(lines[::-1])
-    
     return text
 
-
-##############################################################################
+#######################################################################
 # 5) FULL REACT PIPELINE SNIPPET (WORKING VERSION)
-##############################################################################
+#######################################################################
 def get_pipeline_component(component_args):
     html_template = """
     <div id="rag-root"></div>
@@ -425,9 +316,9 @@ def get_pipeline_component(component_args):
     
     const ProcessExplanation = {
         upload: {
-            title: "Step 1: Document Upload & Processing",
+            title: "Document Upload & Processing",
             icon: '📁',
-            description: "<strong>Loading Your Source Text</strong><br>We simply take your file(s) as is, storing them until you're ready to process. This way, you can upload multiple documents before anything happens—no immediate transformation. It’s all about collecting the raw materials first!",
+            description: "<strong>Step 1: Gather Your Raw Material</strong><br>We begin by taking the text exactly as you provided and processing it.",
             summaryDataExplanation: (data) => `
 <strong>Upload Summary:</strong><br>
 Received ~${data.size || 'N/A'} characters.<br>
@@ -441,9 +332,9 @@ ${data.full || data.preview || 'No content available.'}
             `.trim()
         },
         chunk: {
-            title: "Step 2: Text Chunking",
+            title: "Text Chunking",
             icon: '✂️',
-            description: "<strong>Cutting the Text into Slices</strong><br>Once you're ready, each uploaded text is broken into manageable chunks. This segmentation helps the system handle longer documents more effectively while preserving meaning within each slice.",
+            description: "<strong>Step 2: Slicing Content</strong><br>Your text is divided into segments.",
             summaryDataExplanation: (data) => `
 <strong>Chunk Breakdown (Summary):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
@@ -457,9 +348,9 @@ ${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="c
             `.trim()
         },
         embed: {
-            title: "Step 3: Vector Embedding Generation",
+            title: "Vector Embedding Generation",
             icon: '🧠',
-            description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context. We can visualize these embeddings (imagine a giant 3D cloud of points) where similar tokens or phrases cluster together—like red 'Hello, AI!' tokens standing out among greyer neighbors.",
+            description: "<strong>Step 3: Embedding Generation</strong><br>Each chunk is converted into a vector.",
             summaryDataExplanation: (data) => `
 <strong>Embedding Stats (Summary):</strong><br>
 Dimensions: ${data.dimensions}<br>
@@ -483,9 +374,9 @@ ${ chunkBreakdown.map(item => `<br><span style="color:red;font-weight:bold;">${i
             `.trim()
         },
         store: {
-            title: "Step 4: Vector Database Storage",
+            title: "Vector Database Storage",
             icon: '🗄️',
-            description: "<strong>Archiving Embeddings in ChromaDB</strong><br>After embedding, we place these vectors into a vector database. Later, we can search or retrieve whichever chunk best fits your query by simply comparing these vectors. Think of it like a high-tech library where each book is labeled by thousands of numeric 'keywords.'",
+            description: "<strong>Step 4: Storage</strong><br>Embeddings are stored in the database.",
             summaryDataExplanation: (data) => `
 <strong>Storage Summary:</strong><br>
 Stored ${data.count} chunks in collection "rag_collection".
@@ -496,11 +387,9 @@ Stored ${data.count} chunks in collection "rag_collection" at ${data.timestamp}.
             `.trim()
         },
         query: {
-            title: "Step 5A: Query Collection",
+            title: "Query Collection",
             icon: '❓',
-            description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>\
-Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context.<br><br>\
-For example, consider the word <strong>Switzerland</strong>. It might appear as a 3,000-dimensional vector like [0.642, -0.128, 0.945, ...]. In this snippet, <em>dimension 1</em> (0.642) may reflect geography (mountains, lakes), <em>dimension 2</em> (-0.128) might capture linguistic influences, and <em>dimension 3</em> (0.945) could encode economic traits—such as stability or robust banking. A higher value (e.g., 0.945) indicates a stronger correlation with that dimension's learned feature (in this case, 'economic stability'), whereas lower or negative values signal weaker or contrasting associations. Across thousands of dimensions, these numeric signals combine into a richly layered portrait of meaning.",
+            description: "<strong>Step 5: Query Collection</strong><br>Your query is embedded into a vector.",
             summaryDataExplanation: (data) => `
 <strong>Query Vectorization:</strong><br>
 Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
@@ -520,9 +409,9 @@ Full Token Breakdown: ${ data.token_breakdowns ? data.token_breakdowns.map((chun
             `.trim()
         },
         retrieve: {
-            title: "Step 5B: Context Retrieval",
+            title: "Context Retrieval",
             icon: '🔎',
-            description: "<strong>Finding Matching Passages</strong><br>The query vector is matched against every vector in the database. The passages with the highest similarity (closest in vector-space) pop up as potential answers. For example, if your query is 'Ibach' (a Swiss village), the system might rank passages mentioning 'Switzerland' quite highly, given they share geographical or contextual features in the embedding space.",
+            description: "<strong>Step 6: Retrieve Chunks</strong><br>We retrieve the most similar chunks.",
             summaryDataExplanation: (data) => `
 <strong>Top Matches (Summary):</strong><br>
 ${ data.passages.map((passage, i) => `<br><span style='color:red;font-weight:bold;'>Match ${i+1}:</span> "${passage}" (score ~ ${(data.scores[i]*100).toFixed(1)}%)`).join("<br>") }
@@ -534,9 +423,9 @@ ${ data.passages.map((passage, i) => `<strong>Match ${i+1} (score ${(data.scores
             `.trim()
         },
         generate: {
-            title: "Step 6: Get Answer",
+            title: "Get Answer",
             icon: '🤖',
-            description: "<strong>Using GPT to Combine Context & Query</strong><br>Finally, GPT takes both the query and the top retrieved chunks to generate a focused answer. It's like feeding in a question and its best context, ensuring the result zeroes in on the exact info relevant to your needs.",
+            description: "<strong>Step 7: Get Answer</strong><br>Your final question and retrieved chunks generate an answer.",
             summaryDataExplanation: (data) => `
 <strong>Answer (Summary):</strong><br>
 ${ data.answer ? data.answer.substring(0, Math.floor(data.answer.length/2))+"..." : "No answer yet" }
@@ -561,9 +450,12 @@ ${ data.answer || "No answer available." }
             // Wait a bit for the DOM to update
             setTimeout(() => {
                 const activeElem = document.querySelector('.active-stage');
-                if (activeElem) {
-                    const headerOffset = 100;
+                const container = document.querySelector('.pipeline-column');
+                if (activeElem && container) {
+                    const headerOffset = 100; // Adjust based on your header height
                     const elemTop = activeElem.offsetTop - headerOffset;
+                    
+                    // Find the scrollable container (pipeline-container)
                     const scrollContainer = document.querySelector('.pipeline-container');
                     if (scrollContainer) {
                         scrollContainer.scrollTo({
@@ -601,6 +493,7 @@ ${ data.answer || "No answer available." }
         
         const getStageIndex = (stage) => pipelineStages.findIndex(s => s.id === stage);
         const isStageComplete = (stage) => getStageIndex(stage) < getStageIndex(activeStage);
+        const stageData = args.stageData || {};
         
         return React.createElement('div', { className: 'pipeline-container' },
             showModal && React.createElement('div', { className: 'tooltip-modal' },
@@ -656,7 +549,7 @@ ${ data.answer || "No answer available." }
         height: 100vh;  
         box-sizing: border-box; 
         width: 100%;
-        position: static;
+        position: static;  /* Changed from fixed */
         right: 0;
     }
 
@@ -668,13 +561,13 @@ ${ data.answer || "No answer available." }
         margin: 0 auto;
         padding-right: 10rem;
         overflow-x: visible;
-        min-height: 100vh;
-        padding-bottom: 50vh;
+        min-height: 100vh;  /* Changed */
+        padding-bottom: 50vh;  /* Add this to allow scrolling past the last element */
     }
 
     .modal-content {
-        max-height: none;
-        height: auto;
+        max-height: none;  /* Add this if there are any modal height restrictions */
+        height: auto;      /* Add this */
     }
   .pipeline-box { width: 100%; margin-bottom: 1rem; padding: 1.5rem; border: 2px solid #4B5563; border-radius: 0.75rem; background-color: #1a1a1a; cursor: pointer; transition: all 0.3s; text-align: left; transform-origin: center; position: relative; z-index: 1; }
   .pipeline-box:hover { transform: scale(1.02); border-color: #6B7280; z-index: 1000; }
@@ -704,15 +597,21 @@ ${ data.answer || "No answer available." }
     complete_template = html_template + js_code + css_styles
     return complete_template
 
-
-##############################################################################
+#######################################################################
 # 6) CREATE/LOAD COLLECTION, ETC.
-##############################################################################
+#######################################################################
 def create_or_load_collection(collection_name: str, force_recreate: bool = False):
+    """
+    Retrieve the collection with the specified name using our global
+    embedding_function_instance. If force_recreate is True, delete the
+    existing collection and create a new one.
+    """
     global chroma_client, embedding_function_instance
     if embedding_function_instance is None:
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
         st.stop()
+    
+    # st.write(f"Attempting to load collection '{collection_name}'...")
     
     if force_recreate:
         try:
@@ -722,33 +621,39 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
             st.write(f"Could not delete existing collection '{collection_name}': {e}")
     
     try:
+        # When a collection already exists, ChromaDB will not update its stored embedding function.
         coll = chroma_client.get_collection(name=collection_name, embedding_function=embedding_function_instance)
         coll_info = coll.get()
+        # st.write(f"Collection '{collection_name}' found with {len(coll_info.get('ids', []))} documents.")
     except Exception as e:
+        # st.write(f"Collection '{collection_name}' not found or error encountered: {e}. Creating a new collection.")
         coll = chroma_client.create_collection(name=collection_name, embedding_function=embedding_function_instance)
     return coll
 
-
 def add_to_chroma_collection(collection_name: str, chunks: List[str], metadatas: List[dict], ids: List[str]):
+    # Read the force flag from session_state (set via a sidebar checkbox)
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
+    # Use the custom embedding function to add documents.
     coll.add(documents=chunks, metadatas=metadatas, ids=ids)
     chroma_client.persist()
     update_stage('store', {'collection': collection_name, 'count': len(chunks)})
     st.write(f"Stored {len(chunks)} chunks in collection '{collection_name}'.")
 
-
 def query_collection(query: str, collection_name: str, n_results: int = 3):
+    # Again, use the force flag when loading the collection.
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
     doc_count = len(coll_info.get("ids", []))
     
     st.write(f"Querying collection '{collection_name}' which has {doc_count} documents.")
+    
     if doc_count == 0:
         st.warning("No documents found in collection. Please upload first.")
         return [], []
         
+    # Query using the collection's embedded data.
     results = coll.query(query_texts=[query], n_results=n_results)
     retrieved_passages = results.get("documents", [[]])[0]
     retrieved_metadata = results.get("metadatas", [[]])[0]
@@ -757,27 +662,36 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
     st.write(f"Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
     return retrieved_passages, retrieved_metadata
 
-
-##############################################################################
-# 7) GPT ANSWER GENERATION
-##############################################################################
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
-                             system_instruction: str = None):
-    if system_instruction is None:
-        system_instruction = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
-    
+                             system_instruction: str = (
+                                "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). "
+                                "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! "
+                                "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, "
+                                "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.."
+                                "\n\n"
+                                "Be sure to:\n"
+                                "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
+                                "2. Use italics for emphasis or important nuances.\n"
+                                "3. Maintain a clear, layered structure: \n"
+                                "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
+                                "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
+                                "   - Detailed Explanation (doc-based only)\n"
+                                "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in ""[]"".\n"
+                                "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
+                                "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
+                                "6. Answer succinctly and accurately, focusing on the question asked.\n"
+                                "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
+                                "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria."
+                            )):
     if new_client is None:
         st.error("OpenAI client not initialized. Provide an API key in the sidebar.")
         st.stop()
-    
     context_text = "\n\n".join(retrieved_passages)
-    
     final_prompt = (
         f"{system_instruction}\n\n"
         f"Context:\n{context_text}\n\n"
         f"User Query: {query}\nAnswer:"
     )
-    
     completion = new_client.chat.completions.create(
         model="chatgpt-4o-latest",
         messages=[{"role": "user", "content": final_prompt}],
@@ -787,15 +701,14 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
     update_stage('generate', {'answer': answer})
     return answer
 
-
 def summarize_context(passages: list[str]) -> str:
-    combined = "\n".join(passages)
-    return f"Summary of your documents:\n{combined}"
+    combined = "\n".join(passages[:3])
+    short_summary = combined[:1000]
+    return f"Summary of your documents:\n{short_summary}"
 
-
-##############################################################################
+#######################################################################
 # 7) REALTIME VOICE MODE
-##############################################################################
+#######################################################################
 def get_ephemeral_token(collection_name: str = "rag_collection"):
     if "api_key" not in st.session_state:
         st.error("OpenAI API key not set.")
@@ -805,8 +718,7 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
         "Authorization": f"Bearer {st.session_state['api_key']}",
         "Content-Type": "application/json"
     }
-    chosen_voice = st.session_state.get("selected_voice", "coral")
-    data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": chosen_voice}
+    data = {"model": "gpt-4o-realtime-preview-2024-12-17", "voice": "coral"} #  `alloy`, `ash`, `ballad`, `coral`, `echo` `sage`, `shimmer`, `verse`
     try:
         resp = requests.post(url, headers=headers, json=data)
         resp.raise_for_status()
@@ -827,21 +739,11 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
             st.write("Error response:", e.response.text)
         return None
 
-
 def get_realtime_html(token_data: dict) -> str:
     coll = create_or_load_collection(token_data['collection'])
     all_docs = coll.get()
     all_passages = all_docs.get("documents", [])
     doc_summary = summarize_context(all_passages)
-
-    base_prompt = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
-    voice_instructions = st.session_state.get("voice_custom_prompt", "")
-    if not voice_instructions.strip():
-        voice_instructions = DEFAULT_VOICE_PROMPT
-
-    full_prompt = base_prompt + "\n" + voice_instructions + "\n" + doc_summary
-    st.session_state.avm_initial_text = full_prompt
-
     realtime_js = f"""
     <div id="realtime-status" style="color: lime; font-size: 14px;">Initializing...</div>
     <div id="transcription" style="color: white; margin-top: 5px; font-size: 12px;"></div>
@@ -868,7 +770,7 @@ def get_realtime_html(token_data: dict) -> str:
             statusDiv.innerText = "AVM active";
             dc.send(JSON.stringify({{
                 type: "session.update",
-                session: {{ instructions: `{full_prompt}` }}
+                session: {{ instructions: `{doc_summary}` }}
             }}));
         }};
         dc.onmessage = async (e) => {{
@@ -928,13 +830,30 @@ def get_realtime_html(token_data: dict) -> str:
     initRealtime();
     </script>
     <style>
-        ::-webkit-scrollbar {{ width: 0px; background: transparent; }}
-        body {{ background-color: #111; color: #fff; margin: 0; padding: 0; }}
-        #realtime-status {{ font-family: system-ui, sans-serif; }}
+        body {{
+          background-color: #111; 
+          color: #fff; 
+          font-family: system-ui, sans-serif; 
+          margin: 0; 
+          padding: 0.5rem; 
+          font-size: 12px;
+        }}
+        #transcription {{
+          margin-top: 5px; 
+          padding: 5px; 
+          background-color: #222; 
+          border-radius: 5px; 
+          max-height: 150px; 
+          overflow-y: auto;
+        }}
+        #transcription p {{
+          margin: 3px 0; 
+          padding: 3px; 
+          border-bottom: 1px solid #333;
+        }}
     </style>
     """
     return realtime_js
-
 
 def toggle_avm():
     st.session_state.avm_active = not st.session_state.avm_active
@@ -948,12 +867,11 @@ def toggle_avm():
     else:
         st.session_state.voice_html = None
 
-
-##############################################################################
+#######################################################################
 # 8) MAIN STREAMLIT APP
-##############################################################################
+#######################################################################
 def main():
-    global chroma_client
+    global chroma_client  # declare global so we can reassign it later if needed
     st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
     st.markdown("""
         <style>
@@ -968,33 +886,42 @@ def main():
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
         set_openai_api_key(api_key)
+        
         if chroma_client is None:
             st.error("ChromaDB client not initialized properly")
             st.stop()
     
-    # "Delete All Collections" button in sidebar
     if st.sidebar.button("Delete All Collections"):
         try:
+            # Delete all collections from the ChromaDB client.
             collections = chroma_client.list_collections()
             for collection in collections:
                 chroma_client.delete_collection(name=collection.name)
+            
+            # Remove the persisted storage directory and its subdirectories.
             if os.path.exists(CHROMA_DIRECTORY):
-                import shutil
+                import shutil  # Ensure shutil is imported at the top of your file.
                 shutil.rmtree(CHROMA_DIRECTORY)
                 os.makedirs(CHROMA_DIRECTORY, exist_ok=True)
+            
             st.sidebar.success("All Chroma collections and storage files deleted!")
         except Exception as e:
             st.sidebar.error(f"Error deleting collections: {e}")
 
+    # This goes in main() where the AVM controls are
     st.sidebar.markdown("### AVM Controls")
-    
+
     def toggle_avm():
         st.session_state.avm_button_key += 1  # Force button refresh
+        
+        # If currently active, turn it off
         if st.session_state.avm_active:
             st.session_state.voice_html = None
             st.session_state.avm_active = False
             st.session_state.avm_button_key += 1
             return
+
+        # If currently inactive, turn it on
         token_data = get_ephemeral_token("rag_collection")
         if token_data:
             st.session_state.voice_html = get_realtime_html(token_data)
@@ -1003,25 +930,24 @@ def main():
         else:
             st.sidebar.error("Could not start AVM. Check error messages above.")
 
+    # The button with its label tied directly to the state
     if st.sidebar.button(
         "End AVM" if st.session_state.avm_active else "Start AVM",
         key=f"avm_toggle_{st.session_state.avm_button_key}",
         on_click=toggle_avm
     ):
-        pass
+        pass  # The actual logic is in toggle_avm
 
+    # Show success message based on state change
     if st.session_state.avm_active:
         st.sidebar.success("AVM started.")
     else:
-        if st.session_state.avm_button_key > 0:
+        if st.session_state.avm_button_key > 0:  # Only show if there's been at least one click
             st.sidebar.success("AVM ended.")
-    
-    # **Display the exact AVM initialization text in the sidebar**
-    if st.session_state.avm_active and st.session_state.get("avm_initial_text"):
-        st.sidebar.markdown("### AVM Initial Instructions")
-        st.sidebar.code(st.session_state.avm_initial_text)
-    
+
+    # If AVM is active, show the realtime voice component
     if st.session_state.avm_active and st.session_state.voice_html:
+        # st.sidebar.markdown("#### Realtime Voice")
         components.html(st.session_state.voice_html, height=1, scrolling=True)
     
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
@@ -1029,56 +955,20 @@ def main():
     
     with col1:
         st.header("Step-by-Step Pipeline Control")
-        
-        # --- Step 0: Voice selection & Prompting ---
-        st.subheader("Step 0: Specify Initial Instructions & Voice")
-
-        # Voice selection
-        VOICE_OPTIONS = ["alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"]
-        selected_voice = st.selectbox(
-            "-> Choose a voice for advanced voice mode:",
-            options=VOICE_OPTIONS,
-            index=VOICE_OPTIONS.index(st.session_state.selected_voice) if st.session_state.selected_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
-        )
-        st.session_state.selected_voice = selected_voice
-        # Save selected voice to persist
-        save_voice_pref(selected_voice)
-
-        # Show main system instructions text area
-        loaded_prompt = load_custom_prompt() or BASE_DEFAULT_PROMPT
-        custom_prompt = st.text_area(
-            "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
-            value=loaded_prompt
-        )
-        # Auto-save whenever text area changes
-        st.session_state.custom_prompt = custom_prompt
-        save_custom_prompt(custom_prompt)
-
-        # Advanced voice instructions: auto-save also
-        loaded_voice_instructions = st.session_state.voice_custom_prompt
-        voice_instructions = st.text_area(
-            "-> Customize your advanced voice mode voice & tone. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
-            value=loaded_voice_instructions
-        )
-        st.session_state.voice_custom_prompt = voice_instructions
-        save_voice_instructions(voice_instructions)
-
-        # --- Step 1: Upload Context ---
-        st.subheader("Step 1: Upload Context")
+    
+        # Step 1: Upload
+        st.subheader("Step 1: Upload")
         uploaded_files = st.file_uploader(
-            "-> Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
+            "Upload one or more documents (txt, pdf, docx, csv, xlsx, rtf)",
             type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
             accept_multiple_files=True
         )
 
-        # In your Step 1: Upload Context block (inside the with col1: section)
-        reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=False)
-
-        if st.button("Run Step 1: Upload Context"):
+        if st.button("Run Step 1: Upload"):
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
-                    text = extract_text_from_file(uploaded_file, reverse=reverse_text_order)
+                    text = extract_text_from_file(uploaded_file)
                     if text:
                         combined_text += f"\n\n---\n\n{text}"
                 if combined_text:
@@ -1090,19 +980,19 @@ def main():
             else:
                 st.warning("No file selected.")
         
-        # --- Step 2: Chunk Context ---
-        st.subheader("Step 2: Chunk Context")
-        if st.button("Run Step 2: Chunk Context"):
+        # Step 2: Chunk
+        st.subheader("Step 2: Chunk")
+        if st.button("Run Step 2: Chunk"):
             if st.session_state.uploaded_text:
                 chunks = split_text_into_chunks(st.session_state.uploaded_text)
                 st.session_state.chunks = chunks
                 st.success(f"Text chunked into {len(chunks)} segments.")
             else:
-                st.warning("Please upload min. 1 document first.")
+                st.warning("Please upload a document first.")
         
-        # --- Step 3: Embed Context ---
-        st.subheader("Step 3: Embed Context")
-        if st.button("Run Step 3: Embed Context"):
+        # Step 3: Embed
+        st.subheader("Step 3: Embed")
+        if st.button("Run Step 3: Embed"):
             if st.session_state.chunks:
                 embedding_data = embed_text(st.session_state.chunks, update_stage_flag=True, return_data=True)
                 st.session_state.embeddings = embedding_data
@@ -1110,56 +1000,66 @@ def main():
             else:
                 st.warning("Please chunk the document first.")
         
-        # --- Step 4: Store ---
-        st.subheader("Step 4: Store Embedded Context")
-        if st.button("Run Step 4: Store Embedded Context"):
+        # Step 4: Store
+        st.subheader("Step 4: Store")
+        if st.button("Run Step 4: Store"):
             if st.session_state.chunks and st.session_state.embeddings:
                 ids = [str(uuid.uuid4()) for _ in st.session_state.chunks]
                 metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
                 add_to_chroma_collection("rag_collection", st.session_state.chunks, metadatas, ids)
-                st.success("Data stored in data collection 'rag_collection'!")
+                st.success("Data stored in collection 'rag_collection'!")
             else:
                 st.warning("Ensure document is uploaded, chunked, and embedded.")
         
-        # --- Step 5A: Embed Query (Optional) ---
-        st.subheader("Step 5A: Embed Query (Optional)")
-        query_text = st.text_input("-> Enter a query to see how it is embedded into vectors", key="query_text_input")
+        # Step 5: Query Collection
+        st.subheader("Step 5: Query Collection")
 
-        if st.button("Run Step 5A: Embed Query"):
+        # Use a unique key so that the text input's value persists independently.
+        query_text = st.text_input("Enter your query for Step 5", key="query_text_input")
+
+        if st.button("Run Step 5: Query Collection"):
+            # Retrieve the current query value from session_state using the unique key.
             current_query = st.session_state.query_text_input
+            
             if current_query.strip():
+                # Embed the query and update the stage
                 query_data = embed_text([current_query], update_stage_flag=False, return_data=True)
                 query_data['query'] = current_query
                 update_stage('query', query_data)
                 st.session_state.query_embedding = query_data["embeddings"]
-                st.session_state.query_text_step5 = current_query
+                st.session_state.query_text_step5 = current_query  # Optionally persist the current query
                 st.success("Query vectorized!")
             else:
                 st.warning("Please enter a query.")
         
-        # --- Step 5B: Retrieve Query Embeddings (Optional) ---
-        st.subheader("Step 5B: Retrieve Matching Chunks (Optional)")
-        if st.button("Run Step 5B: Retrieve Matching Chunks"):
+        # Step 6: Retrieve
+        st.subheader("Step 6: Retrieve")
+        if st.button("Run Step 6: Retrieve"):
             if st.session_state.query_embedding:
                 passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection")
                 st.session_state.retrieved_passages = passages
                 st.session_state.retrieved_metadata = metadata
-                st.success("Relevant chunks retrieved based on your query in Step 5A!")
+                st.success("Relevant passages retrieved!")
             else:
-                st.warning("Run Step 5A (Embed Query) first.")
+                st.warning("Run Step 5 (Query Collection) first.")
         
-        # --- Step 6: Get Answer ---
-        st.subheader("Step 6: Get Answer")
-        final_question = st.text_input("-> Enter your final question for Step 6", key="final_question_input")
+        # Step 7: Get Answer
+        st.subheader("Step 7: Get Answer")
 
-        if st.button("Run Step 6: Get Answer"):
+        # Use a unique key for the text input so that its value persists independently.
+        final_question = st.text_input("Enter your final question for Step 7", key="final_question_input")
+
+        if st.button("Run Step 7: Get Answer"):
+            # Retrieve the current value from session state using the unique key.
             current_question = st.session_state.final_question_input
+            
             if current_question.strip():
+                # Perform query and generation using the current question.
                 passages, metadata = query_collection(current_question, "rag_collection")
                 if passages:
                     answer = generate_answer_with_gpt(current_question, passages, metadata)
                     st.session_state.final_answer = answer
-                    st.session_state.final_question_step7 = current_question
+                    st.session_state.final_question_step7 = current_question  # Optional: persist the last used question.
                     st.success("Answer generated!")
                     st.write(answer)
                 else:
@@ -1177,7 +1077,6 @@ def main():
         }
         pipeline_html = get_pipeline_component(component_args)
         components.html(pipeline_html, height=2000, scrolling=True)
-
 
 if __name__ == "__main__":
     main()
