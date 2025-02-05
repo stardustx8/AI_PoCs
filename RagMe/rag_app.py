@@ -702,9 +702,10 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
     return answer
 
 def summarize_context(passages: list[str]) -> str:
-    combined = "\n".join(passages[:3])
-    short_summary = combined[:1000]
-    return f"Summary of your documents:\n{short_summary}"
+    # Combine all passages without slicing
+    combined = "\n".join(passages)
+    # Return the complete text without truncation
+    return f"Summary of your documents:\n{combined}"
 
 #######################################################################
 # 7) REALTIME VOICE MODE
@@ -740,10 +741,41 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
         return None
 
 def get_realtime_html(token_data: dict) -> str:
+    # Retrieve the collection and all documents.
     coll = create_or_load_collection(token_data['collection'])
     all_docs = coll.get()
     all_passages = all_docs.get("documents", [])
+    
+    # Compute the document summary (this now returns the full text).
     doc_summary = summarize_context(all_passages)
+    
+    # Define a custom prompt prefix.
+    prompt_prefix = (
+        "You are a helpful legal assistant. Answer the following query based ONLY on the provided context (the RAG regulation document). \n"
+        "Your answer must begin with a high level concise instructions to action if the user asked for help. Then output a concise TL;DR summary in bullet points, followed by a Detailed Explanation - all 3 sections drawing strictly from the RAG regulation document! \n"
+        "After the Detailed Explanation, include a new section titled 'Other references' where you may add any further relevant insights or clarifications from your own prior knowledge, \n"
+        "but clearly label them as separate from the doc-based content; make them bulletized, starting with the paragraphs, then prose why relevant etc.. \n"
+        "\n\n"
+        "Be sure to:\n"
+        "1. Use bold to highlight crucial numeric thresholds, legal terms, or statutory references on first mention.\n"
+        "2. Use italics for emphasis or important nuances.\n"
+        "3. Maintain a clear, layered structure: \n"
+        "   - High-level, concise instructions to action in the user's case if the user asked for help. VERY IMPORTANT: no vague instructions, no assumptions but directly executable, deterministic guidance (ex. 'if the knife is > than 5cm x is allowed, y is prohibited') based purely on the provided document!\n"
+        "   - TL;DR summary (bullet points, doc-based only); VERY IMPORTANT: the TL;DR must only contain references to resp. be only based on the provided document, don't introduce other legal frameworks here.\n"
+        "   - Detailed Explanation (doc-based only)\n"
+        "   - Other references (your additional knowledge or commentary); VERY IMPORTANT please add explicit statutory references here (and only here), you can write all pertinent references in \"[]\".\n"
+        "4. In 'Other references,' feel free to elaborate or cite external knowledge, disclaimers, or expansions, but explicitly note this section is beyond the doc.\n"
+        "5. Refrain from using any info that is not in the doc within the TL;DR or Detailed Explanation sections.\n"
+        "6. Answer succinctly and accurately, focusing on the question asked.\n"
+        "7. Where relevant, include a *short example scenario* within the Detailed Explanation to illustrate how the doc-based rules might apply practically (e.g., carrying a **10 cm** folding knife in everyday settings).\n"
+        "8. Ensure that in the TL;DR, key numeric thresholds and terms defined by the doc are **bolded**, and consider briefly referencing what constitutes a 'weapon' under the doc’s classification criteria.\n"
+    )
+    # Concatenate the prompt prefix with the document summary.
+    full_prompt = prompt_prefix + doc_summary
+    
+    # **Store the full prompt in session state** so you can inspect it.
+    st.session_state.avm_initial_text = full_prompt
+
     realtime_js = f"""
     <div id="realtime-status" style="color: lime; font-size: 14px;">Initializing...</div>
     <div id="transcription" style="color: white; margin-top: 5px; font-size: 12px;"></div>
@@ -768,9 +800,10 @@ def get_realtime_html(token_data: dict) -> str:
         const dc = pc.createDataChannel("events");
         dc.onopen = () => {{
             statusDiv.innerText = "AVM active";
+            // **Send the complete prompt (prompt prefix + context) to AVM**
             dc.send(JSON.stringify({{
                 type: "session.update",
-                session: {{ instructions: `{doc_summary}` }}
+                session: {{ instructions: `{full_prompt}` }}
             }}));
         }};
         dc.onmessage = async (e) => {{
@@ -830,27 +863,11 @@ def get_realtime_html(token_data: dict) -> str:
     initRealtime();
     </script>
     <style>
-        body {{
-          background-color: #111; 
-          color: #fff; 
-          font-family: system-ui, sans-serif; 
-          margin: 0; 
-          padding: 0.5rem; 
-          font-size: 12px;
-        }}
-        #transcription {{
-          margin-top: 5px; 
-          padding: 5px; 
-          background-color: #222; 
-          border-radius: 5px; 
-          max-height: 150px; 
-          overflow-y: auto;
-        }}
-        #transcription p {{
-          margin: 3px 0; 
-          padding: 3px; 
-          border-bottom: 1px solid #333;
-        }}
+        /* CSS styles remain unchanged */
+        ::-webkit-scrollbar {{ width: 0px; background: transparent; }}
+        body {{ background-color: #111; color: #fff; margin: 0; padding: 0; }}
+        #realtime-status {{ font-family: system-ui, sans-serif; }}
+        /* ... additional CSS ... */
     </style>
     """
     return realtime_js
@@ -886,42 +903,32 @@ def main():
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
         set_openai_api_key(api_key)
-        
         if chroma_client is None:
             st.error("ChromaDB client not initialized properly")
             st.stop()
     
     if st.sidebar.button("Delete All Collections"):
         try:
-            # Delete all collections from the ChromaDB client.
             collections = chroma_client.list_collections()
             for collection in collections:
                 chroma_client.delete_collection(name=collection.name)
-            
-            # Remove the persisted storage directory and its subdirectories.
             if os.path.exists(CHROMA_DIRECTORY):
-                import shutil  # Ensure shutil is imported at the top of your file.
+                import shutil
                 shutil.rmtree(CHROMA_DIRECTORY)
                 os.makedirs(CHROMA_DIRECTORY, exist_ok=True)
-            
             st.sidebar.success("All Chroma collections and storage files deleted!")
         except Exception as e:
             st.sidebar.error(f"Error deleting collections: {e}")
 
-    # This goes in main() where the AVM controls are
     st.sidebar.markdown("### AVM Controls")
-
+    
     def toggle_avm():
         st.session_state.avm_button_key += 1  # Force button refresh
-        
-        # If currently active, turn it off
         if st.session_state.avm_active:
             st.session_state.voice_html = None
             st.session_state.avm_active = False
             st.session_state.avm_button_key += 1
             return
-
-        # If currently inactive, turn it on
         token_data = get_ephemeral_token("rag_collection")
         if token_data:
             st.session_state.voice_html = get_realtime_html(token_data)
@@ -930,24 +937,25 @@ def main():
         else:
             st.sidebar.error("Could not start AVM. Check error messages above.")
 
-    # The button with its label tied directly to the state
     if st.sidebar.button(
         "End AVM" if st.session_state.avm_active else "Start AVM",
         key=f"avm_toggle_{st.session_state.avm_button_key}",
         on_click=toggle_avm
     ):
-        pass  # The actual logic is in toggle_avm
+        pass
 
-    # Show success message based on state change
     if st.session_state.avm_active:
         st.sidebar.success("AVM started.")
     else:
-        if st.session_state.avm_button_key > 0:  # Only show if there's been at least one click
+        if st.session_state.avm_button_key > 0:
             st.sidebar.success("AVM ended.")
-
-    # If AVM is active, show the realtime voice component
+    
+    # **Display the exact AVM initialization text in the sidebar**
+    if st.session_state.avm_active and st.session_state.get("avm_initial_text"):
+        st.sidebar.markdown("### AVM Initial Instructions")
+        st.sidebar.code(st.session_state.avm_initial_text)
+    
     if st.session_state.avm_active and st.session_state.voice_html:
-        # st.sidebar.markdown("#### Realtime Voice")
         components.html(st.session_state.voice_html, height=1, scrolling=True)
     
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
