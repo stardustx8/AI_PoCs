@@ -877,7 +877,9 @@ def get_realtime_html(token_data: dict) -> str:
     full_prompt = (
         "<INSTRUCTIONS>\n" +
         base_prompt + "\n" +
+        "<VOICE_INSTRUCTIONS>\n" +
         voice_instructions + "\n" +
+        "</VOICE_INSTRUCTIONS>\n" +
         "</INSTRUCTIONS>\n" +
         "\n\n<DOCUMENTS>\n" +
         doc_summary + "\n" +
@@ -1168,51 +1170,107 @@ def main():
     with col1:
         st.header("Step-by-Step Pipeline Control")
         
-        # --- Step 0: Voice selection & Prompting ---
+        # --- Step 0: Specify Initial Instructions & Voice ---
         st.subheader("Step 0: Specify Initial Instructions & Voice")
-            
-        # Voice selection
+
         VOICE_OPTIONS = ["alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"]
-        current_voice = load_voice_pref(st.session_state.user_id)
+
+        # Load the current voice preference for the logged-in user, defaulting to "coral"
+        current_voice = load_voice_pref(st.session_state.user_id) if st.session_state.get("user_id") else "coral"
+
         selected_voice = st.selectbox(
             "-> Choose a voice for advanced voice mode:",
             options=VOICE_OPTIONS,
             index=VOICE_OPTIONS.index(current_voice) if current_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
         )
 
-        # Main system instructions text area
-        loaded_prompt = load_custom_prompt(st.session_state.user_id) or BASE_DEFAULT_PROMPT
-        custom_prompt = st.text_area(
-            "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
-            value=loaded_prompt
+        # If the selection has changed, update session state and persist the new voice
+        if selected_voice != current_voice:
+            st.session_state.selected_voice = selected_voice
+            save_voice_pref(selected_voice, st.session_state.user_id)
+
+        # ---------------------------
+        # For Main System Instructions
+        # ---------------------------
+        # Use session state as the source of truth for the prompt.
+        if "custom_prompt" not in st.session_state:
+            st.session_state.custom_prompt = load_custom_prompt(st.session_state.user_id) or ""
+        # Ensure a unique widget key exists.
+        if "custom_prompt_widget_key" not in st.session_state:
+            st.session_state.custom_prompt_widget_key = str(uuid.uuid4())
+        # Create an empty container for the text area.
+        prompt_container = st.empty()
+        custom_prompt = prompt_container.text_area(
+            "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode.\n\n"
+            "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+            value=st.session_state.custom_prompt,
+            key=st.session_state.custom_prompt_widget_key
         )
-        if custom_prompt != loaded_prompt:
+        # Update session state if the user makes changes.
+        if custom_prompt != st.session_state.custom_prompt:
             st.session_state.custom_prompt = custom_prompt
             save_custom_prompt(custom_prompt, st.session_state.user_id)
 
-        # Voice instructions text area
-        loaded_voice_instructions = load_voice_instructions(st.session_state.user_id)
-        voice_instructions = st.text_area(
-            "-> Customize your advanced voice mode voice & tone. \n\n -> Deleting the contents of this box & refreshing your browser restores a default prompt.",
-            value=loaded_voice_instructions if loaded_voice_instructions else DEFAULT_VOICE_PROMPT
+        # Button to restore default system instructions
+        if st.button("Restore Default Prompt (System Instructions)"):
+            st.session_state.custom_prompt = BASE_DEFAULT_PROMPT
+            save_custom_prompt(BASE_DEFAULT_PROMPT, st.session_state.user_id)
+            # Update the widget key so the text_area re-initializes
+            st.session_state.custom_prompt_widget_key = str(uuid.uuid4())
+            # Re-render the text area in its container with the default value.
+            prompt_container.text_area(
+                "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode.\n\n"
+                "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+                value=st.session_state.custom_prompt,
+                key=st.session_state.custom_prompt_widget_key
+            )
+
+        # ---------------------------
+        # For Voice Instructions
+        # ---------------------------
+        if "voice_custom_prompt" not in st.session_state:
+            st.session_state.voice_custom_prompt = load_voice_instructions(st.session_state.user_id) or ""
+        if "voice_instructions_widget_key" not in st.session_state:
+            st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
+        voice_container = st.empty()
+        voice_instructions = voice_container.text_area(
+            "-> Customize your advanced voice mode voice & tone.\n\n"
+            "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+            value=st.session_state.voice_custom_prompt,
+            key=st.session_state.voice_instructions_widget_key
         )
-        if voice_instructions != loaded_voice_instructions:
+        if voice_instructions != st.session_state.voice_custom_prompt:
             st.session_state.voice_custom_prompt = voice_instructions
             save_voice_instructions(voice_instructions, st.session_state.user_id)
 
-        # --- Step 1: Upload Context ---
-        st.subheader("Step 1: Upload Context")
-        uploaded_files = st.file_uploader(
-            "-> Upload one or more documents (txt / EXPERIMENTAL: pdf, docx, csv, xlsx, rtf)",
-            type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
-            accept_multiple_files=True
-        )
+        # Button to restore default voice instructions
+        if st.button("Restore Default Prompt (Voice Instructions)"):
+            st.session_state.voice_custom_prompt = DEFAULT_VOICE_PROMPT
+            save_voice_instructions(DEFAULT_VOICE_PROMPT, st.session_state.user_id)
+            st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
+            voice_container.text_area(
+                "-> Customize your advanced voice mode voice & tone.\n\n"
+                "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+                value=st.session_state.voice_custom_prompt,
+                key=st.session_state.voice_instructions_widget_key
+            )
 
-        # In your Step 1: Upload Context block (inside the with col1: section)
+       # --- Step 1: Upload Context ---
+        st.subheader("Step 1: Upload Context")
+
+        # Define the reverse text order checkbox BEFORE the form.
         reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=True)
 
-        if st.button("Run Step 1: Upload Context"):
-            st.session_state.uploaded_file = None
+        # Wrap the uploader in a form with clear_on_submit=True.
+        with st.form("upload_form", clear_on_submit=True):
+            uploaded_files = st.file_uploader(
+                "-> Upload one or more documents (txt / EXPERIMENTAL: pdf, docx, csv, xlsx, rtf)",
+                type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
+                accept_multiple_files=True
+            )
+            submitted = st.form_submit_button("Run Step 1: Upload Context")
+
+        if submitted:
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
@@ -1227,7 +1285,7 @@ def main():
                     st.error("No text could be extracted from the uploaded files.")
             else:
                 st.warning("No file selected.")
-        
+
         # --- Step 2: Chunk Context ---
         st.subheader("Step 2: Chunk Context")
         if st.button("Run Step 2: Chunk Context"):
@@ -1241,10 +1299,15 @@ def main():
         # --- Step 3: Embed Context ---
         st.subheader("Step 3: Embed Context")
         if st.button("Run Step 3: Embed Context"):
-            if st.session_state.chunks:
-                embedding_data = embed_text(st.session_state.chunks, update_stage_flag=True, return_data=True)
-                st.session_state.embeddings = embedding_data
-                st.success("Embeddings created!")
+            if not st.session_state.get("api_key"):
+                st.error("OpenAI API key not set. Please provide a valid API key in the sidebar before running this step.")
+            elif st.session_state.chunks:
+                try:
+                    embedding_data = embed_text(st.session_state.chunks, update_stage_flag=True, return_data=True)
+                    st.session_state.embeddings = embedding_data
+                    st.success("Embeddings created!")
+                except Exception as e:
+                    st.error(f"An error occurred while generating embeddings: {e}")
             else:
                 st.warning("Please chunk the document first.")
         
