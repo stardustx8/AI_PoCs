@@ -1321,8 +1321,7 @@ def main():
             st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
         voice_container = st.empty()
         voice_instructions = voice_container.text_area(
-            "-> Customize your advanced voice mode voice & tone.\n\n"
-            "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+            "-> Customize your advanced voice mode voice & tone.\n\n",
             value=st.session_state.voice_custom_prompt,
             key=st.session_state.voice_instructions_widget_key
         )
