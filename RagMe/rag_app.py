@@ -491,7 +491,7 @@ ${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="c
         embed: {
             title: "Step 3: Vector Embedding Generation",
             icon: '🧠',
-            description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context. We can visualize these embeddings (imagine a giant 3D cloud of points) where similar tokens or phrases cluster together—like red 'Hello, AI!' tokens standing out among greyer neighbors.",
+            description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context. In vector space terms, a positive correlation (say, +0.94) indicates a strong semantic connection — like 'Switzerland' <-> 'financial stability'. Conversely, a negative correlation (e.g., –1.00) might show that 'Switzerland' stands in stark contrast to something - such as 'coastal state.'",
             summaryDataExplanation: (data) => `
 <strong>Embedding Stats (Summary):</strong><br>
 Dimensions: ${data.dimensions}<br>
@@ -531,8 +531,8 @@ Stored ${data.count} chunks in collection "rag_collection" at ${data.timestamp}.
             title: "Step 5A: Query Collection",
             icon: '❓',
             description: "<strong>Transforming Chunks into High-Dimensional Vectors</strong><br>\
-Each chunk is converted into a multi-thousand-dimensional vector. Even a single sentence can map into thousands of numeric features! Why? Because language is highly nuanced, and each dimension captures subtle shades of meaning, syntax, or context.<br><br>\
-For example, consider the word <strong>Switzerland</strong>. It might appear as a 3,000-dimensional vector like [0.642, -0.128, 0.945, ...]. In this snippet, <em>dimension 1</em> (0.642) may reflect geography (mountains, lakes), <em>dimension 2</em> (-0.128) might capture linguistic influences, and <em>dimension 3</em> (0.945) could encode economic traits—such as stability or robust banking. A higher value (e.g., 0.945) indicates a stronger correlation with that dimension's learned feature (in this case, 'economic stability'), whereas lower or negative values signal weaker or contrasting associations. Across thousands of dimensions, these numeric signals combine into a richly layered portrait of meaning.",
+Each chunk is converted into a multi-thousand-dimensional vector, exactly as in Step 3<br><br>\
+Digging into that, consider the word <strong>England</strong>. It might appear as a 3,000-dimensional vector like [0.642, -0.128, 0.945, ...]. In this snippet, <em>dimension 1</em> (0.642) may reflect geography (mountains, lakes), <em>dimension 2</em> (-0.128) might capture linguistic influences, and <em>dimension 3</em> (0.945) could encode economic traits—such as stability or robust banking. As indicated, a higher value (e.g., 0.945) indicates a stronger correlation with that dimension's learned feature (in this case, 'economic stability'), whereas lower or negative values signal weaker or contrasting associations. Across thousands of dimensions, these numeric signals combine into a richly layered portrait of meaning.",
             summaryDataExplanation: (data) => `
 <strong>Query Vectorization:</strong><br>
 Query: <span style="color:red;font-weight:bold;">"${data.query || 'N/A'}"</span><br>
@@ -1178,7 +1178,7 @@ def main():
             st.session_state.avm_active = True
             st.session_state.avm_button_key += 1
         else:
-            st.sidebar.error("Could not start AVM. Check error messages at the top of the main section   >   >>   >>>")
+            st.sidebar.error("Could not start AVM.\n\nCheck error messages at the top of the main section ---------------------------->>>")
 
     if st.sidebar.button(
         "End AVM" if st.session_state.avm_active else "Start AVM",
