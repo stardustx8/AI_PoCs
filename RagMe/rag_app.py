@@ -14,7 +14,6 @@ VOICE_PREF_FILE = "voice_pref.txt"
 # UNIFIED PROMPT DEFINITIONS
 ##############################################################################
 BASE_DEFAULT_PROMPT = (
-    "<PROMPT>\n"
     "  <ROLE>\n"
     "    You are an extremely smart, knowledgeable, and helpful assistant. You must answer the user’s query based "
     "    **ONLY** on the provided context from the RAG documents. Always think step-by-step. The user is very "
@@ -65,12 +64,10 @@ BASE_DEFAULT_PROMPT = (
     "  <FINAL_REMARKS>\n"
     "    - Carefully follow each step for an optimal, well-structured response.\n"
     "    - Always present the final answer in normal prose, not XML.\n"
-    "  </FINAL_REMARKS>\n"
-    "</PROMPT>\n"
+    "  </FINAL_REMARKS>"
 )
 
 DEFAULT_VOICE_PROMPT = (
-    "<VOICE_INSTRUCTIONS>\n"
     "  <DELTA_FROM_MAIN_PROMPT>\n"
     "    1. If you find no direct or partial way to connect the user's query to the RAG documents, do not simply "
     "       declare \"cannot answer.\" Instead, say \"While the docs might not directly address this, here's my "
@@ -83,8 +80,7 @@ DEFAULT_VOICE_PROMPT = (
     "    4. Continue following professional doc-based, academic rigor, accuracy and completeness in your core content\n\n"
     "    5. Adhere to the fallback structure only when absolutely necessary (i.e., if no doc-based info can possibly "
     "       apply).\n"
-    "  </DELTA_FROM_MAIN_PROMPT>\n"
-    "</VOICE_INSTRUCTIONS>\n"
+    "  </DELTA_FROM_MAIN_PROMPT>"
 )
 
 ##############################################################################
@@ -876,7 +872,9 @@ def get_realtime_html(token_data: dict) -> str:
 
     full_prompt = (
         "<INSTRUCTIONS>\n" +
+        "<PROMPT>\n" +
         base_prompt + "\n" +
+        "</PROMPT>\n" +
         "<VOICE_INSTRUCTIONS>\n" +
         voice_instructions + "\n" +
         "</VOICE_INSTRUCTIONS>\n" +
@@ -1032,7 +1030,45 @@ def verify_login(username, password):
 
 
 ##############################################################################
-# o) MAIN STREAMLIT APP
+# 9) DELETE USERS
+##############################################################################
+
+def delete_user(user_id: str):
+    import shutil
+    from pathlib import Path
+
+    users = load_users()
+    if user_id not in users:
+        return False, "User not found."
+
+    # Remove the user from the users file.
+    del users[user_id]
+    save_users(users)
+
+    # Delete the custom prompt file.
+    prompt_path = Path(f"prompts/user_{user_id}_custom_prompt.txt")
+    if prompt_path.exists():
+        prompt_path.unlink()
+
+    # Delete the voice preference file.
+    voice_pref_path = Path(f"preferences/user_{user_id}_voice_pref.txt")
+    if voice_pref_path.exists():
+        voice_pref_path.unlink()
+
+    # Delete the voice instructions file.
+    voice_instr_path = Path(f"instructions/user_{user_id}_voice_instructions.txt")
+    if voice_instr_path.exists():
+        voice_instr_path.unlink()
+
+    # Delete the user-specific chromadb storage directory.
+    user_dir = f"chromadb_storage_user_{user_id}"
+    if os.path.exists(user_dir):
+        shutil.rmtree(user_dir)
+
+    return True, f"User '{user_id}' deleted successfully."
+
+##############################################################################
+# 10) MAIN STREAMLIT APP
 ##############################################################################
 
 def main():
@@ -1164,6 +1200,59 @@ def main():
     if st.session_state.avm_active and st.session_state.voice_html:
         components.html(st.session_state.voice_html, height=1, scrolling=True)
     
+
+    with st.sidebar:
+        if st.session_state.get("user_id") == "Rosh":
+            st.markdown("### Delete Account")
+
+            # Load the current users list and filter out "admin"
+            users = load_users()
+            users_filtered = [u for u in users if u != "admin"]
+
+            # Create a container to hold the selectbox so we can update it later.
+            user_container = st.empty()
+
+            if users_filtered:
+                # Set the default selection to "Rosh" if possible.
+                if ("selected_user" not in st.session_state) or (st.session_state["selected_user"] not in users_filtered):
+                    st.session_state["selected_user"] = "Rosh" if "Rosh" in users_filtered else users_filtered[0]
+
+                selected_user = user_container.selectbox(
+                    "Select an account to delete:",
+                    options=users_filtered,
+                    index=users_filtered.index(st.session_state["selected_user"])
+                )
+                st.session_state["selected_user"] = selected_user
+
+                confirm = st.checkbox("Confirm deletion", key="delete_confirm")
+                if st.button("Delete Account"):
+                    if confirm:
+                        success, msg = delete_user(selected_user)
+                        if success:
+                            st.success(msg)
+                            # After deletion, re-read the users list.
+                            new_users = load_users()
+                            new_users_filtered = [u for u in new_users if u != "admin"]
+
+                            if new_users_filtered:
+                                # Reset the selected user to "Rosh" if it exists; otherwise, to the first account.
+                                st.session_state["selected_user"] = "Rosh" if "Rosh" in new_users_filtered else new_users_filtered[0]
+                                # Update the container with a new selectbox using the updated list.
+                                user_container.selectbox(
+                                    "Select an account to delete:",
+                                    options=new_users_filtered,
+                                    index=new_users_filtered.index(st.session_state["selected_user"])
+                                )
+                            else:
+                                user_container.info("No user accounts found.")
+                        else:
+                            st.error(msg)
+                    else:
+                        st.warning("Please check the box to confirm deletion.")
+            else:
+                st.info("No user accounts found.")
+
+
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
     col1, spacer, col2 = st.columns([1.3, 0.3, 2])
     
