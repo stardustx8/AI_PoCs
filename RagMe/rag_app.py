@@ -1178,7 +1178,7 @@ def main():
             st.session_state.avm_active = True
             st.session_state.avm_button_key += 1
         else:
-            st.sidebar.error("Could not start AVM. Check error messages at the top of the main section.")
+            st.sidebar.error("Could not start AVM. Check error messages at the top of the main section >>> >>> >>>")
 
     if st.sidebar.button(
         "End AVM" if st.session_state.avm_active else "Start AVM",
