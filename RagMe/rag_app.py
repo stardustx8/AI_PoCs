@@ -1202,20 +1202,20 @@ def main():
     
 
     with st.sidebar:
-        if st.session_state.get("user_id") == "Rosh":
+        if st.session_state.get("user_id") == "RoshAdm":
             st.markdown("### Delete Account")
 
             # Load the current users list and filter out "admin"
             users = load_users()
-            users_filtered = [u for u in users if u != "admin"]
+            users_filtered = [u for u in users if u != "RoshAdm"]
 
             # Create a container to hold the selectbox so we can update it later.
             user_container = st.empty()
 
             if users_filtered:
-                # Set the default selection to "Rosh" if possible.
+                # Set the default selection to "RoshAdm" if possible.
                 if ("selected_user" not in st.session_state) or (st.session_state["selected_user"] not in users_filtered):
-                    st.session_state["selected_user"] = "Rosh" if "Rosh" in users_filtered else users_filtered[0]
+                    st.session_state["selected_user"] = "RoshAdm" if "RoshAdm" in users_filtered else users_filtered[0]
 
                 selected_user = user_container.selectbox(
                     "Select an account to delete:",
@@ -1235,8 +1235,8 @@ def main():
                             new_users_filtered = [u for u in new_users if u != "admin"]
 
                             if new_users_filtered:
-                                # Reset the selected user to "Rosh" if it exists; otherwise, to the first account.
-                                st.session_state["selected_user"] = "Rosh" if "Rosh" in new_users_filtered else new_users_filtered[0]
+                                # Reset the selected user to "RoshAdm" if it exists; otherwise, to the first account.
+                                st.session_state["selected_user"] = "RoshAdm" if "RoshAdm" in new_users_filtered else new_users_filtered[0]
                                 # Update the container with a new selectbox using the updated list.
                                 user_container.selectbox(
                                     "Select an account to delete:",
