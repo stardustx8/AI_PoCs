@@ -1290,8 +1290,7 @@ def main():
         # Create an empty container for the text area.
         prompt_container = st.empty()
         custom_prompt = prompt_container.text_area(
-            "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode.\n\n"
-            "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+            "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode.\n\n",
             value=st.session_state.custom_prompt,
             key=st.session_state.custom_prompt_widget_key
         )
@@ -1308,8 +1307,7 @@ def main():
             st.session_state.custom_prompt_widget_key = str(uuid.uuid4())
             # Re-render the text area in its container with the default value.
             prompt_container.text_area(
-                "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode.\n\n"
-                "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+                "-> Customize the text chatbot's initial instructions ('System Instructions') for text- & advanced voice mode.\n\n",
                 value=st.session_state.custom_prompt,
                 key=st.session_state.custom_prompt_widget_key
             )
