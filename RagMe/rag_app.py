@@ -1350,7 +1350,7 @@ def main():
         # Wrap the uploader in a form with clear_on_submit=True.
         with st.form("upload_form", clear_on_submit=True):
             uploaded_files = st.file_uploader(
-                "-> Upload one or more documents (txt / EXPERIMENTAL: pdf, docx, csv, xlsx, rtf)",
+                "-> Upload one or more *.txt documents (EXPERIMENTAL: pdf, docx, csv, xlsx, rtf)",
                 type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
                 accept_multiple_files=True
             )
