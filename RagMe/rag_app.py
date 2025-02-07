@@ -372,7 +372,9 @@ if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
 # 4) PIPELINE STAGE HELPER FUNCTIONS
 ##############################################################################
 def update_stage(stage: str, data=None):
+    st.session_state[f'{stage}_data'] = data
     st.session_state.current_stage = stage
+    
     if data is not None:
         if stage == 'embed' and isinstance(data, dict):
             enhanced_data = data
@@ -383,7 +385,7 @@ def update_stage(stage: str, data=None):
             enhanced_data['preview'] = text[:600] if text else None
             enhanced_data['full'] = text
         elif stage == 'chunk':
-            # Check if data is already a dict (like our chunk_preview_data)
+            # For chunk stage, expect the keys "chunks" and "total_chunks"
             if isinstance(data, dict) and 'chunks' in data and 'total_chunks' in data:
                 enhanced_data = data
             elif isinstance(data, list):
@@ -439,6 +441,33 @@ def sanitize_text(text: str) -> str:
     ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
     return ascii_text
 
+def normalize_text(text: str, is_reversed: bool) -> str:
+    """
+    Normalize text order.
+    
+    If the text is reversed, reverse the order of lines.
+    """
+    if is_reversed:
+        lines = text.splitlines()
+        return "\n".join(reversed(lines))
+    return text
+
+def chunk_text(text: str) -> list[str]:
+    """
+    Split the text into chunks using boundary markers.
+    
+    Expected markers include:
+      - "====================== CH ======================"
+      - "====================== US ======================"
+      - "================== END OF CH =================="
+      - "================== END OF US =================="
+    
+    Returns a list of non-empty, trimmed chunks.
+    """
+    pattern = r"(={5,}\s*(?:CH|US|END OF CH|END OF US)\s*={5,})"
+    parts = re.split(pattern, text)
+    chunks = [part.strip() for part in parts if part.strip()]
+    return chunks
 
 def is_valid_country_code(code: str) -> bool:
     """Only validates 2-letter ISO codes"""
@@ -446,75 +475,87 @@ def is_valid_country_code(code: str) -> bool:
 
 def split_text_into_chunks(text: str) -> List[dict]:
     """
-    Enhanced chunking to parse out each country block by marker like:
-      ====================== CH ======================
-      ...text...
-      ================== END OF CH ==================
-    Then for each block, we do sub-chunking (by paragraphs or size).
+    Splits the input text into chunks based on country markers.
+    Debug prints are added to log the matching process.
+    Each chunk produced will have associated metadata with a 'country_code'.
     """
-    import re
-    
-    # 1) We'll first update Stage to 'upload' for the pipeline UI
+    # Update the upload stage so you can see the raw text info.
     update_stage('upload', {'content': text, 'size': len(text)})
     
-    # 2) Regex to find blocks for e.g. "CH", "US" etc.
+    # DEBUG: Print the first 500 characters of the text to inspect markers.
+    st.write("DEBUG: Text snippet (first 500 chars):", text[:500])
+    
+    # Revised regex pattern: enforce that the end marker's country matches the start marker.
     pattern = re.compile(
-        r'(=+\s*(?P<country>[A-Z]{2,3})\s*=+)'
-        r'(.*?)'
-        r'(=+\s*END OF\s+(?P=country)\s*=+)',
-        flags=re.DOTALL
+        r'(=+\s*(?P<country>[A-Z]{2,3})\s*=+)'   # Start marker with country code
+        r'(.*?)'                                 # Content (non-greedy)
+        r'(=+\s*END\s+OF\s+(?P=country)\s*=+)',    # End marker: backreference to the start's country
+        flags=re.DOTALL | re.IGNORECASE
     )
     
     matches = list(pattern.finditer(text))
+    st.write(f"DEBUG: Found {len(matches)} regex match(es) for country blocks.")
+    
+    # Log details for each match.
+    for i, m in enumerate(matches):
+        st.write(f"DEBUG: Match {i+1}:")
+        st.write("  Full match:", m.group(0))
+        st.write("  Start marker:", m.group(1))
+        st.write("  Detected country (start):", m.group("country"))
+        st.write("  Block content snippet (first 300 chars):", m.group(3)[:300])
+        st.write("  End marker:", m.group(4))
+    
     all_chunks = []
     
     if matches:
-        # Found one or more distinct country blocks
+        # Use the regex matches to extract chunks.
         for m in matches:
-            country_code = m.group('country')  # e.g. "CH", "US"
-            block_content = m.group(3)         # The text between start/end markers
-
-            # Optional: convert "UK" -> "GB", "USA" -> "US", etc.
+            country_code = m.group("country")
+            block_content = m.group(3)
+            st.write("DEBUG: Processing block for country:", country_code)
+            st.write("DEBUG: Block content snippet (first 300 chars):", block_content[:300])
+            
+            # Handle special cases (e.g., "USA" -> "US", "UK" -> "GB", etc.)
             iso_code = handle_country_code_special_cases(country_code)
-
-            # Sub-chunk it further so we don't end up with giant single-chunk docs
+            # Break the block into smaller chunks.
             sub_chunks = chunk_by_paragraph_or_size(block_content, iso_code=iso_code)
             all_chunks.extend(sub_chunks)
     else:
-        # Fallback if no markers found at all
-        from typing import Optional
-        iso_code: Optional[str] = detect_country_in_text_fallback(text)
+        # If no regex match was found, fall back to naive detection.
+        st.write("DEBUG: No country block matches found. Falling back to naive country detection.")
+        iso_code = detect_country_in_text_fallback(text)
+        st.write("DEBUG: Fallback detected country:", iso_code)
         sub_chunks = chunk_by_paragraph_or_size(text, iso_code=iso_code if iso_code else "UNKNOWN")
         all_chunks.extend(sub_chunks)
     
-    if not all_chunks:
-        st.warning("No valid country sections (or sub-chunks) found.")
-        return []
+    st.write("DEBUG: Total number of chunks produced:", len(all_chunks))
     
-    # We'll show a short sample (first ~5) plus full for the pipeline UI
+    # Prepare a preview dictionary.
     chunk_preview_data = {
         "chunks": [f"{c['text'][:300]}..." for c in all_chunks[:5]],
-        "full_chunks": [c["text"] for c in all_chunks],
+        "full_chunks": [ {"text": c["text"], "country": c["metadata"].get("country_code", "UNKNOWN")} 
+                         for c in all_chunks ],
         "total_chunks": len(all_chunks)
     }
     
-    # Let the pipeline know we've done "chunk" stage
+    # Update the pipeline stage for chunking.
     update_stage('chunk', chunk_preview_data)
     
     return all_chunks
 
-
 def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: int = 1200) -> List[dict]:
     """
-    Splits a block of text into smaller segments, each up to ~max_length chars.
-    Also stores the 'country_code' in metadata.
+    Splits a block of text into smaller segments (chunks) with a maximum length.
+    Each chunk gets tagged with the provided country ISO code.
     """
     import textwrap
     paragraphs = [p.strip() for p in block_content.split("\n\n") if p.strip()]
     
+    st.write(f"DEBUG: Splitting block into paragraphs. Found {len(paragraphs)} paragraph(s) for country {iso_code}.")
+    
     sub_chunks = []
     for para in paragraphs:
-        # If paragraph is very large, break it further
+        # If a paragraph is longer than max_length, wrap it further.
         for chunk in textwrap.wrap(para, width=max_length):
             sub_chunks.append({
                 "text": chunk,
@@ -523,6 +564,31 @@ def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: in
                     "source": f"{iso_code}_legislation"
                 }
             })
+    st.write(f"DEBUG: Total sub-chunks for country {iso_code}: {len(sub_chunks)}")
+    return sub_chunks
+
+def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: int = 1200) -> List[dict]:
+    """
+    Splits a block of text into smaller segments (chunks) with a maximum length.
+    Each chunk gets tagged with the provided country ISO code.
+    """
+    import textwrap
+    paragraphs = [p.strip() for p in block_content.split("\n\n") if p.strip()]
+    
+    st.write(f"DEBUG: Splitting block into paragraphs. Found {len(paragraphs)} paragraphs for country {iso_code}.")
+    
+    sub_chunks = []
+    for para in paragraphs:
+        # If a paragraph is longer than max_length, wrap it further.
+        for chunk in textwrap.wrap(para, width=max_length):
+            sub_chunks.append({
+                "text": chunk,
+                "metadata": {
+                    "country_code": iso_code,
+                    "source": f"{iso_code}_legislation"
+                }
+            })
+    st.write(f"DEBUG: Total sub-chunks for country {iso_code}: {len(sub_chunks)}")
     return sub_chunks
 
 
@@ -685,30 +751,33 @@ ${data.full || data.preview || 'No content available.'}
             `.trim()
         },
         chunk: {
-            title: "Step 2: Text Chunking",
-            icon: '✂️',
-            description: "<strong>Cutting the Text into Slices</strong><br>Once you're ready, each uploaded text is broken into manageable chunks. This segmentation helps the system handle longer documents more effectively while preserving meaning within each slice.",
-            summaryDataExplanation: (data) => `
+    title: "Step 2: Text Chunking",
+    icon: '✂️',
+    description: "<strong>Cutting the Text into Slices</strong><br>Each uploaded text is broken into manageable chunks. Each chunk now includes its detected country code.",
+    summaryDataExplanation: (data) => `
 <strong>Chunk Breakdown (Summary):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
 ${ (data.chunks || []).map((chunk, i) => {
-    // If you want country, you'd have to store it in chunk text or reference.
-    return `<br><span style="color:red;font-weight:bold;">Chunk ${i+1}</span> => "${chunk}"`
+    // If you can include the country info in the summary, you might modify your preview
+    // For instance, if data.full_chunks is available, you could pull the country for each preview.
+    // (Assuming that data.full_chunks[i] has a "country" property.)
+    const country = data.full_chunks && data.full_chunks[i] ? data.full_chunks[i].country : "UNKNOWN";
+    return `<br><span style="color:red;font-weight:bold;">Chunk ${i+1} [${country}]</span> => "${chunk}"`
 }).join('') }
-            `.trim(),
-            dataExplanation: (data) => `
+`.trim(),
+    dataExplanation: (data) => `
 <strong>Chunk Breakdown (Expanded):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
 All Chunks:<br>
 ${
   (data.full_chunks || []).map((chunk, i) => `
     <br><span style="color:red;font-weight:bold;">
-      Chunk ${i+1}:
-    </span> "${chunk}"
+      Chunk ${i+1} [${chunk.country}]:
+    </span> "${chunk.text}"
   `).join('')
 }
-`.trim()
-        },
+    `.trim()
+},
         embed: {
             title: "Step 3: Vector Embedding Generation",
             icon: '🧠',
@@ -1714,11 +1783,20 @@ def main():
         st.subheader("Step 2: Chunk Context")
         if st.button("Run Step 2: Chunk Context"):
             if st.session_state.uploaded_text:
-                chunks = split_text_into_chunks(st.session_state.uploaded_text)
+                # If the reverse checkbox is ticked, we assume the extracted text is reversed.
+                # Reverse it again to restore its original (canonical) order before chunking.
+                if reverse_text_order:
+                    processed_text = "\n".join(st.session_state.uploaded_text.splitlines()[::-1])
+                    st.write("DEBUG: Re-reversed text for processing.")
+                else:
+                    processed_text = st.session_state.uploaded_text
+
+                # Now pass the processed text (in normal order) to the chunking function.
+                chunks = split_text_into_chunks(processed_text)
                 st.session_state.chunks = chunks
                 st.success(f"Text chunked into {len(chunks)} segments.")
             else:
-                st.warning("Please upload min. 1 document first.")
+                st.warning("Please upload at least one document first.")
         
         # --- Step 3: Embed Context ---
         st.subheader("Step 3: Embed Context")
