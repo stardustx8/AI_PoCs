@@ -1029,6 +1029,51 @@ def verify_login(username, password):
     users = load_users()
     return username in users and users[username] == password
 
+def delete_user_collections(user_id: str) -> tuple[bool, str]:
+    """
+    Delete all ChromaDB collections for a specific user.
+    
+    Args:
+        user_id: The ID of the user whose collections should be deleted
+        
+    Returns:
+        tuple[bool, str]: Success status and message
+    """
+    if not user_id:
+        return False, "No user ID provided"
+    
+    try:
+        # Get user-specific directory
+        user_dir = f"chromadb_storage_user_{user_id}"
+        
+        # If the directory doesn't exist, nothing to delete
+        if not os.path.exists(user_dir):
+            return True, "No collections found for user"
+            
+        # Create a new client instance for this user's directory
+        temp_client = chromadb.Client(Settings(
+            chroma_db_impl="duckdb+parquet",
+            persist_directory=user_dir
+        ))
+        
+        # Delete all collections for this user
+        collections = temp_client.list_collections()
+        for collection in collections:
+            temp_client.delete_collection(name=collection.name)
+            
+        # Close the client connection
+        temp_client.reset()
+        
+        # Remove the directory
+        shutil.rmtree(user_dir)
+        
+        # Recreate empty directory
+        os.makedirs(user_dir, exist_ok=True)
+        
+        return True, f"Successfully deleted all collections for user {user_id}"
+        
+    except Exception as e:
+        return False, f"Error deleting collections: {str(e)}"
 
 ##############################################################################
 # 9) DELETE USERS
@@ -1142,6 +1187,8 @@ def main():
     st.title("RAG + Advanced Voice Mode (AVM) Cockpit")
     
     # Sidebar: API key and force recreate option
+    global chroma_client, embedding_function_instance
+    
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
         set_openai_api_key(api_key)
@@ -1151,18 +1198,23 @@ def main():
     
     # "Delete All Collections" button in sidebar
     if st.sidebar.button("Delete All Collections"):
-        try:
-            collections = chroma_client.list_collections()
-            for collection in collections:
-                chroma_client.delete_collection(name=collection.name)
-            if os.path.exists(CHROMA_DIRECTORY):
-                import shutil
-                shutil.rmtree(CHROMA_DIRECTORY)
-                os.makedirs(CHROMA_DIRECTORY, exist_ok=True)
-            st.sidebar.success("All Chroma collections and storage files deleted!")
-        except Exception as e:
-            st.sidebar.error(f"Error deleting collections: {e}")
-
+        if not st.session_state.get("user_id"):
+            st.sidebar.error("Please log in first")
+        else:
+            success, message = delete_user_collections(st.session_state.user_id)
+            if success:
+                # Reset the ChromaDB client to force reconnection
+                chroma_client, embedding_function_instance = init_chroma_client()
+                
+                # Clear relevant session state
+                for stage in ['store', 'query', 'retrieve', 'generate']:
+                    if f'{stage}_data' in st.session_state:
+                        st.session_state[f'{stage}_data'] = None
+                
+                st.sidebar.success(message)
+            else:
+                st.sidebar.error(message)
+                
     st.sidebar.markdown("### AVM Controls")
     
     def toggle_avm():
