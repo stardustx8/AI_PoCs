@@ -133,7 +133,7 @@ import json
 import time
 import numpy as np  # optional for numeric ops
 import tiktoken     # optional for token counting
-from typing import List
+from typing import List, Dict, Set, Optional, Tuple, Union, Any
 import unicodedata
 import requests
 from openai import OpenAI
@@ -142,6 +142,7 @@ import hashlib
 import os
 from typing import Optional
 from pathlib import Path
+import pycountry
 
 
 try:
@@ -201,6 +202,93 @@ class OpenAIEmbeddingFunction:
         response = self.client.embeddings.create(input=texts, model="text-embedding-3-large")
         return [item.embedding for item in response.data]
 
+class CountryDetector:
+    """
+    Handles country detection using ISO codes and common names/variations
+    """
+    def __init__(self):
+        self.country_mapping = self._build_country_mapping()
+        
+    def _build_country_mapping(self) -> Dict[str, Dict[str, Set[str]]]:
+        """
+        Builds a comprehensive mapping of countries including:
+        - ISO codes (alpha_2, alpha_3)
+        - Common names and variations
+        - Official names
+        """
+        mapping = {}
+        
+        for country in pycountry.countries:
+            country_data = {
+                'iso': {country.alpha_2, country.alpha_3},
+                'names': {country.name.lower()}
+            }
+            
+            # Add common names and variations
+            if hasattr(country, 'common_name'):
+                country_data['names'].add(country.common_name.lower())
+            if hasattr(country, 'official_name'):
+                country_data['names'].add(country.official_name.lower())
+                
+            # Add special cases and common variations
+            special_cases = {
+                'US': {'usa', 'united states', 'america', 'american'},
+                'GB': {'uk', 'united kingdom', 'britain', 'british', 'england'},
+                'CH': {'switzerland', 'swiss'},
+                'DE': {'germany', 'german'},
+                # Add more special cases as needed
+            }
+            
+            if country.alpha_2 in special_cases:
+                country_data['names'].update(special_cases[country.alpha_2])
+            
+            # Store both by alpha_2 and alpha_3 codes
+            mapping[country.alpha_2] = country_data
+            mapping[country.alpha_3] = country_data
+        
+        return mapping
+    
+    def get_iso_alpha2(self, country_identifier: str) -> Optional[str]:
+        """
+        Convert any country identifier (name, ISO code) to ISO alpha-2 code
+        """
+        country_identifier = country_identifier.strip().upper()
+        
+        # Direct ISO code match
+        if country_identifier in self.country_mapping:
+            # Get the alpha-2 code (some entries might be alpha-3)
+            for code in self.country_mapping[country_identifier]['iso']:
+                if len(code) == 2:
+                    return code
+        
+        # Try to find by name
+        identifier_lower = country_identifier.lower()
+        for iso_code, data in self.country_mapping.items():
+            if len(iso_code) == 2:  # Only check alpha-2 entries
+                if identifier_lower in data['names']:
+                    return iso_code
+        
+        return None
+    
+    def detect_country_in_text(self, text: str) -> Optional[str]:
+        """
+        Detect country references in text and return ISO alpha-2 code
+        """
+        text_lower = text.lower()
+        
+        # First try to find exact ISO codes
+        for match in re.finditer(r'\b([A-Z]{2,3})\b', text.upper()):
+            iso_code = self.get_iso_alpha2(match.group(1))
+            if iso_code:
+                return iso_code
+        
+        # Then try common names and variations
+        for iso_code, data in self.country_mapping.items():
+            if len(iso_code) == 2:  # Only check alpha-2 entries
+                if any(name in text_lower for name in data['names']):
+                    return iso_code
+        
+        return None
 
 ##############################################################################
 # 2) SESSION STATE INIT
@@ -295,7 +383,13 @@ def update_stage(stage: str, data=None):
             enhanced_data['preview'] = text[:600] if text else None
             enhanced_data['full'] = text
         elif stage == 'chunk':
-            enhanced_data = {'chunks': data[:5], 'total_chunks': len(data)}
+            # Check if data is already a dict (like our chunk_preview_data)
+            if isinstance(data, dict) and 'chunks' in data and 'total_chunks' in data:
+                enhanced_data = data
+            elif isinstance(data, list):
+                enhanced_data = {'chunks': data[:5], 'total_chunks': len(data)}
+            else:
+                enhanced_data = {'data': data}
         elif stage == 'store':
             enhanced_data['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S')
         elif stage == 'query':
@@ -346,37 +440,155 @@ def sanitize_text(text: str) -> str:
     return ascii_text
 
 
-def split_text_into_chunks(text: str) -> List[str]:
+def is_valid_country_code(code: str) -> bool:
+    """Only validates 2-letter ISO codes"""
+    return bool(pycountry.countries.get(alpha_2=code))
+
+def split_text_into_chunks(text: str) -> List[dict]:
+    """
+    Enhanced chunking to parse out each country block by marker like:
+      ====================== CH ======================
+      ...text...
+      ================== END OF CH ==================
+    Then for each block, we do sub-chunking (by paragraphs or size).
+    """
+    import re
+    
+    # 1) We'll first update Stage to 'upload' for the pipeline UI
     update_stage('upload', {'content': text, 'size': len(text)})
-    chunks = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
-    update_stage('chunk', chunks)
-    return chunks
+    
+    # 2) Regex to find blocks for e.g. "CH", "US" etc.
+    pattern = re.compile(
+        r'(=+\s*(?P<country>[A-Z]{2,3})\s*=+)'
+        r'(.*?)'
+        r'(=+\s*END OF\s+(?P=country)\s*=+)',
+        flags=re.DOTALL
+    )
+    
+    matches = list(pattern.finditer(text))
+    all_chunks = []
+    
+    if matches:
+        # Found one or more distinct country blocks
+        for m in matches:
+            country_code = m.group('country')  # e.g. "CH", "US"
+            block_content = m.group(3)         # The text between start/end markers
+
+            # Optional: convert "UK" -> "GB", "USA" -> "US", etc.
+            iso_code = handle_country_code_special_cases(country_code)
+
+            # Sub-chunk it further so we don't end up with giant single-chunk docs
+            sub_chunks = chunk_by_paragraph_or_size(block_content, iso_code=iso_code)
+            all_chunks.extend(sub_chunks)
+    else:
+        # Fallback if no markers found at all
+        from typing import Optional
+        iso_code: Optional[str] = detect_country_in_text_fallback(text)
+        sub_chunks = chunk_by_paragraph_or_size(text, iso_code=iso_code if iso_code else "UNKNOWN")
+        all_chunks.extend(sub_chunks)
+    
+    if not all_chunks:
+        st.warning("No valid country sections (or sub-chunks) found.")
+        return []
+    
+    # We'll show a short sample (first ~5) plus full for the pipeline UI
+    chunk_preview_data = {
+        "chunks": [f"{c['text'][:300]}..." for c in all_chunks[:5]],
+        "full_chunks": [c["text"] for c in all_chunks],
+        "total_chunks": len(all_chunks)
+    }
+    
+    # Let the pipeline know we've done "chunk" stage
+    update_stage('chunk', chunk_preview_data)
+    
+    return all_chunks
+
+
+def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: int = 1200) -> List[dict]:
+    """
+    Splits a block of text into smaller segments, each up to ~max_length chars.
+    Also stores the 'country_code' in metadata.
+    """
+    import textwrap
+    paragraphs = [p.strip() for p in block_content.split("\n\n") if p.strip()]
+    
+    sub_chunks = []
+    for para in paragraphs:
+        # If paragraph is very large, break it further
+        for chunk in textwrap.wrap(para, width=max_length):
+            sub_chunks.append({
+                "text": chunk,
+                "metadata": {
+                    "country_code": iso_code,
+                    "source": f"{iso_code}_legislation"
+                }
+            })
+    return sub_chunks
+
+
+def handle_country_code_special_cases(country_str: str) -> str:
+    """
+    Convert 2-3 letter placeholders into standard ISO alpha-2 codes
+    or something close. For example:
+    - "USA" -> "US"
+    - "UK"  -> "GB"
+    """
+    code_up = country_str.upper()
+    if code_up == "USA":
+        return "US"
+    if code_up == "UK":
+        return "GB"
+    if len(code_up) == 2:
+        return code_up
+    return "UNKNOWN"
+
+
+def detect_country_in_text_fallback(text: str) -> str:
+    """
+    If we found no markers, do a naive detection for 'US', 'UK', 'AU', etc.
+    or fallback to 'UNKNOWN'.
+    """
+    text_up = text.upper()
+    if "USA" in text_up:
+        return "US"
+    if "UNITED KINGDOM" in text_up or "UK" in text_up:
+        return "GB"
+    if "AUSTRALIA" in text_up:
+        return "AU"
+    # ... more guesses if needed ...
+    return "UNKNOWN"
 
 
 def embed_text(
-    texts: List[str],
+    texts: List[Union[str, Dict[str, Any]]],
     openai_embedding_model: str = "text-embedding-3-large",
     update_stage_flag=True,
     return_data=False
 ):
     if not st.session_state.get("api_key"):
-        st.error("OpenAI API key not set. Provide it in the sidebar.")
+        st.error("OpenAI API key not set.")
         st.stop()
-    safe_texts = [sanitize_text(s) for s in texts]
+        
+    processed_texts = [chunk["text"] if isinstance(chunk, dict) else chunk for chunk in texts]
+    safe_texts = [sanitize_text(s) for s in processed_texts]
+    
     response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
     embeddings = [item.embedding for item in response.data]
+    
     token_breakdowns = []
     for text, embedding in zip(safe_texts, embeddings):
-        tokens = text.split()
+        # Take first 10 words for token breakdown to avoid visualization issues
+        tokens = text.split()[:10]
         breakdown = []
         if tokens:
-            dims_per_token = len(embedding) // len(tokens)
+            segment_size = len(embedding) // len(tokens)
             for i, tok in enumerate(tokens):
-                start = i * dims_per_token
-                end = start + dims_per_token if i < len(tokens) - 1 else len(embedding)
-                snippet = embedding[start:end]
+                start = i * segment_size
+                end = start + segment_size
+                snippet = embedding[start:min(end, len(embedding))]
                 breakdown.append({"token": tok, "vector_snippet": snippet[:10]})
         token_breakdowns.append(breakdown)
+    
     embedding_data = {
         "embeddings": embeddings,
         "dimensions": len(embeddings[0]) if embeddings else 0,
@@ -384,12 +596,12 @@ def embed_text(
         "total_vectors": len(embeddings),
         "token_breakdowns": token_breakdowns
     }
+    
     if update_stage_flag:
         update_stage('embed', embedding_data)
     if return_data:
         return embedding_data
     return embeddings
-
 
 def extract_text_from_file(uploaded_file, reverse=False) -> str:
     file_name = uploaded_file.name.lower()
@@ -479,14 +691,23 @@ ${data.full || data.preview || 'No content available.'}
             summaryDataExplanation: (data) => `
 <strong>Chunk Breakdown (Summary):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
-Sample Chunks: ${ (data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
+${ (data.chunks || []).map((chunk, i) => {
+    // If you want country, you'd have to store it in chunk text or reference.
+    return `<br><span style="color:red;font-weight:bold;">Chunk ${i+1}</span> => "${chunk}"`
+}).join('') }
             `.trim(),
             dataExplanation: (data) => `
 <strong>Chunk Breakdown (Expanded):</strong><br>
 Total Chunks: ${data.total_chunks}<br>
 All Chunks:<br>
-${ (data.full_chunks || data.chunks || []).map((chunk, i) => `<br><span style="color:red;font-weight:bold;">Chunk ${i + 1}:</span> "${chunk}"`).join('') }
-            `.trim()
+${
+  (data.full_chunks || []).map((chunk, i) => `
+    <br><span style="color:red;font-weight:bold;">
+      Chunk ${i+1}:
+    </span> "${chunk}"
+  `).join('')
+}
+`.trim()
         },
         embed: {
             title: "Step 3: Vector Embedding Generation",
@@ -761,32 +982,96 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
     return coll
 
 
-def add_to_chroma_collection(collection_name: str, chunks: List[str], metadatas: List[dict], ids: List[str]):
+def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[str, Any]]], metadatas: Optional[List[dict]] = None, ids: Optional[List[str]] = None):
+    if ids is None:
+        ids = [str(uuid.uuid4()) for _ in chunks]
+    
+    # Extract text and metadata from chunks if they're dictionaries
+    if isinstance(chunks[0], dict):
+        texts = [chunk["text"] for chunk in chunks]
+        chunk_metadatas = [chunk["metadata"] for chunk in chunks]
+    else:
+        texts = chunks
+        chunk_metadatas = metadatas if metadatas else [{"source": "uploaded_document"} for _ in chunks]
+    
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
-    coll.add(documents=chunks, metadatas=metadatas, ids=ids)
+    coll.add(documents=texts, metadatas=chunk_metadatas, ids=ids)
     chroma_client.persist()
-    update_stage('store', {'collection': collection_name, 'count': len(chunks)})
-    st.write(f"Stored {len(chunks)} chunks in collection '{collection_name}'.")
+    
+    update_stage('store', {
+        'collection': collection_name,
+        'count': len(texts)
+    })
+    st.write(f"Stored {len(texts)} chunks in collection '{collection_name}'.")
 
 
 def query_collection(query: str, collection_name: str, n_results: int = 3):
+    """
+    Enhanced query function that maintains existing functionality while adding country awareness
+    """
+    # Initialize country detector
+    country_detector = CountryDetector()
+    
+    # Get collection and check document count (preserve existing checks)
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
     doc_count = len(coll_info.get("ids", []))
     
+    # Preserve existing status message
     st.write(f"Querying collection '{collection_name}' which has {doc_count} documents.")
+    
     if doc_count == 0:
         st.warning("No documents found in collection. Please upload first.")
         return [], []
-        
-    results = coll.query(query_texts=[query], n_results=n_results)
-    retrieved_passages = results.get("documents", [[]])[0]
-    retrieved_metadata = results.get("metadatas", [[]])[0]
     
+    # Try to detect country in query
+    query_country_code = country_detector.detect_country_in_text(query)
+    
+    if query_country_code:
+        # If country detected, try country-specific search first
+        st.write(f"Detected country code: {query_country_code}")
+        results = coll.query(
+            query_texts=[query],
+            where={"country_code": query_country_code},
+            n_results=n_results
+        )
+        retrieved_passages = results.get("documents", [[]])[0]
+        retrieved_metadata = results.get("metadatas", [[]])[0]
+        
+        # If we don't get enough results, supplement with general search
+        if len(retrieved_passages) < n_results:
+            st.write(f"Found only {len(retrieved_passages)} results for {query_country_code}. Supplementing with general search...")
+            remaining_results = n_results - len(retrieved_passages)
+            
+            # Additional query excluding already found passages
+            additional_results = coll.query(
+                query_texts=[query],
+                where={"country_code": {"$ne": query_country_code}},  # not equal to the current country
+                n_results=remaining_results
+            )
+            
+            retrieved_passages.extend(additional_results.get("documents", [[]])[0])
+            retrieved_metadata.extend(additional_results.get("metadatas", [[]])[0])
+    else:
+        # No country detected, use standard search (preserve existing behavior)
+        results = coll.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        retrieved_passages = results.get("documents", [[]])[0]
+        retrieved_metadata = results.get("metadatas", [[]])[0]
+    
+    # Preserve existing stage update and status message
     update_stage('retrieve', {"passages": retrieved_passages, "metadata": retrieved_metadata})
     st.write(f"Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
+    
+    # Add informative message about country detection
+    if retrieved_passages:
+        countries_found = set(meta.get('country_code', 'Unknown') for meta in retrieved_metadata)
+        st.write(f"Results include information from: {', '.join(countries_found)}")
+    
     return retrieved_passages, retrieved_metadata
 
 
