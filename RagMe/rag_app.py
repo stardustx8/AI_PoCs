@@ -452,6 +452,9 @@ def normalize_text(text: str, is_reversed: bool) -> str:
         return "\n".join(reversed(lines))
     return text
 
+import re
+import streamlit as st
+
 def chunk_text(text: str) -> list[str]:
     """
     Split the text into chunks using boundary markers.
@@ -464,9 +467,42 @@ def chunk_text(text: str) -> list[str]:
     
     Returns a list of non-empty, trimmed chunks.
     """
+
+    # 1) Canonicalize/re-orient text if reversed
+    canonical_text = ensure_canonical_order(text)
+
+    st.write("DEBUG: chunk_text() -> after ensure_canonical_order().")
+    st.write("DEBUG: Original text (first 150 chars):", text[:150].replace("\n","\\n"))
+    st.write("DEBUG: Canonical text (first 150 chars):", canonical_text[:150].replace("\n","\\n"))
+
+    # 2) Overwrite the "upload" stage so that the RAG pipeline's "Upload Summary"
+    #    (in React) sees the updated text.
+    original_upload_data = st.session_state.get('upload_data', {})
+    updated_upload_data = {
+        'content': canonical_text,
+        'preview': canonical_text[:600],
+        'size': len(canonical_text),
+        # Copy any other keys from original_upload_data if needed
+    }
+    st.write("DEBUG: Overwriting 'upload' stage data with canonical text.")
+    update_stage('upload', updated_upload_data)
+
+    # 3) Now proceed with chunking using the canonical_text 
     pattern = r"(={5,}\s*(?:CH|US|END OF CH|END OF US)\s*={5,})"
-    parts = re.split(pattern, text)
+    parts = re.split(pattern, canonical_text)
+
+    # 4) Filter out empty lines, strip whitespace from each chunk
     chunks = [part.strip() for part in parts if part.strip()]
+
+    # (Optional) Update your "chunk" stage if you want the pipeline UI 
+    # to display chunk info:
+    chunk_data = {
+        'chunks': chunks[:5],   # A short preview
+        'total_chunks': len(chunks)
+    }
+    update_stage('chunk', chunk_data)
+
+    st.write("DEBUG: chunk_text() -> total chunks:", len(chunks))
     return chunks
 
 def is_valid_country_code(code: str) -> bool:
@@ -475,6 +511,7 @@ def is_valid_country_code(code: str) -> bool:
         return True
     # Otherwise, valid ISO country codes are exactly two letters.
     return len(code) == 2 and code.isalpha()
+
 
 def split_text_into_chunks(text: str) -> List[dict]:
     """
@@ -604,59 +641,18 @@ def split_text_into_chunks(text: str) -> List[dict]:
     
     return all_chunks
 
-def ensure_canonical_order(text: str) -> str:
-    """
-    Checks if the text appears to be in reversed order.
-    If the first non-empty line starts with "END OF", assume the text is reversed
-    and return it re-reversed (canonical order). Otherwise, return the text as-is.
-    """
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            if stripped.upper().startswith("END OF"):
-                st.write("DEBUG: Text appears reversed. Reversing it to canonical order.")
-                return "\n".join(text.splitlines()[::-1])
-            break
-    return text
-
 def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: int = 1200) -> List[dict]:
-    """
-    Splits a block of text into smaller segments (chunks) with a maximum length.
-    Each chunk gets tagged with the provided country ISO code.
-    """
     import textwrap
     paragraphs = [p.strip() for p in block_content.split("\n\n") if p.strip()]
     
-    st.write(f"DEBUG: Splitting block into paragraphs. Found {len(paragraphs)} paragraph(s) for country {iso_code}.")
-    
     sub_chunks = []
     for para in paragraphs:
-        # If a paragraph is longer than max_length, wrap it further.
+        # Skip paragraphs that are just the separator
+        if para.strip() == "---":
+            continue
         for chunk in textwrap.wrap(para, width=max_length):
-            sub_chunks.append({
-                "text": chunk,
-                "metadata": {
-                    "country_code": iso_code,
-                    "source": f"{iso_code}_legislation"
-                }
-            })
-    st.write(f"DEBUG: Total sub-chunks for country {iso_code}: {len(sub_chunks)}")
-    return sub_chunks
-
-def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: int = 1200) -> List[dict]:
-    """
-    Splits a block of text into smaller segments (chunks) with a maximum length.
-    Each chunk gets tagged with the provided country ISO code.
-    """
-    import textwrap
-    paragraphs = [p.strip() for p in block_content.split("\n\n") if p.strip()]
-    
-    st.write(f"DEBUG: Splitting block into paragraphs. Found {len(paragraphs)} paragraphs for country {iso_code}.")
-    
-    sub_chunks = []
-    for para in paragraphs:
-        # If a paragraph is longer than max_length, wrap it further.
-        for chunk in textwrap.wrap(para, width=max_length):
+            if chunk.strip() == "---":
+                continue
             sub_chunks.append({
                 "text": chunk,
                 "metadata": {
@@ -852,8 +848,8 @@ ${
     </span> "${chunk.text}"
   `).join('')
 }
-    `.trim()
-},
+`.trim()
+        },
         embed: {
             title: "Step 3: Vector Embedding Generation",
             icon: '🧠',
@@ -1505,15 +1501,19 @@ def delete_user_collections(user_id: str) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Error deleting collections: {str(e)}"
 
+
+
+
+
+
 ##############################################################################
 # 9) DELETE USERS
 ##############################################################################
-
 def delete_user(user_id: str):
     import shutil
     from pathlib import Path
 
-    users = load_users()
+    users = load_users()  # (Assumes load_users() is defined elsewhere)
     if user_id not in users:
         return False, "User not found."
 
@@ -1543,10 +1543,133 @@ def delete_user(user_id: str):
 
     return True, f"User '{user_id}' deleted successfully."
 
+
+##############################################################################
+# TEXT PROCESSING & CHUNKING FUNCTIONS
+##############################################################################
+import streamlit as st
+import re
+import unicodedata
+
+def ensure_canonical_order(text: str) -> str:
+    """
+    Examines the text and reverses it if it appears reversed.
+    This function skips over any lines that are composed solely of dashes
+    (e.g. '---') so that the first meaningful line is used for detection.
+    
+    If that first non-dash line contains "END OF" (ignoring extra marker characters),
+    the text is assumed to be reversed and is flipped (line-by-line). Otherwise,
+    the original text is returned.
+    """
+    lines = text.splitlines()
+    st.write(f"DEBUG: ensure_canonical_order -> total lines read: {len(lines)}")
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        # Skip lines that are solely dashes (e.g. '---')
+        if stripped and not re.fullmatch(r"[-]+", stripped):
+            st.write(f"DEBUG: First non-dash non-empty line => {repr(stripped)}")
+            if re.search(r"END OF", stripped, flags=re.IGNORECASE):
+                st.write("DEBUG: Found 'END OF' => reversing text!")
+                return "\n".join(lines[::-1])
+            else:
+                st.write("DEBUG: 'END OF' not found => no reversal triggered.")
+            break
+    st.write("DEBUG: returning original text => no changes.")
+    return text
+
+def update_stage(stage: str, data=None):
+    """
+    Stores the provided data for the given pipeline stage in session state.
+    This data is later read by the React pipeline component.
+    """
+    if data is None:
+        data = {}
+    st.session_state[f"{stage}_data"] = data
+    st.session_state["current_stage"] = stage
+
+def chunk_text(text: str) -> list[str]:
+    """
+    Splits the canonical (i.e. reversed if necessary) text into chunks using boundary markers.
+    
+    Expected markers include:
+      - "====================== CH ======================"
+      - "====================== US ======================"
+      - "================== END OF CH =================="
+      - "================== END OF US =================="
+    
+    Steps:
+      1) Call ensure_canonical_order() to get the canonical text.
+      2) Remove any lines that consist solely of dashes (which may interfere with marker detection).
+      3) Split the cleaned text using a regex pattern (with re.IGNORECASE).
+      4) If no chunks are produced, fall back to returning the entire cleaned text as one chunk.
+      5) Update the "upload" stage (with the canonical text) and the "chunk" stage (with a preview of chunk data).
+    """
+    # 1) Canonicalize the text.
+    canonical_text = ensure_canonical_order(text)
+    st.write("DEBUG: chunk_text() -> after ensure_canonical_order()")
+    st.write("DEBUG: Canonical text (first 80 chars):", repr(canonical_text[:80]))
+    
+    # 2) Remove lines that are solely dashes.
+    lines = canonical_text.splitlines()
+    cleaned_lines = [line for line in lines if not re.fullmatch(r"[-]+", line.strip())]
+    cleaned_text = "\n".join(cleaned_lines)
+    st.write("DEBUG: Cleaned canonical text (first 80 chars):", repr(cleaned_text[:80]))
+    
+    # 3) Split using regex (with IGNORECASE).
+    pattern = r"(={5,}\s*(?:CH|US|END OF CH|END OF US)\s*={5,})"
+    chunks = re.split(pattern, cleaned_text, flags=re.IGNORECASE)
+    chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
+    st.write(f"DEBUG: chunk_text() -> raw chunks: {chunks}")
+    
+    # 4) Fallback: if splitting yields less than 2 chunks, use full cleaned text as one chunk.
+    if len(chunks) < 2:
+        st.write("DEBUG: No chunks found by regex. Using full text as one chunk.")
+        chunks = [cleaned_text]
+    st.write(f"DEBUG: chunk_text() -> final chunks: {chunks}")
+    
+    # 5) Update the "upload" stage with the canonical text.
+    upload_data = st.session_state.get("upload_data") or {}
+    upload_data.update({
+        "content": canonical_text,
+        "preview": canonical_text[:600],
+        "size": len(canonical_text),
+    })
+    st.write("DEBUG: Overwriting 'upload' stage data with canonical text.")
+    update_stage("upload", upload_data)
+    
+    # 6) Update the "chunk" stage with chunk preview data.
+    chunk_data = {
+        "chunks": chunks[:5],  # short preview of first 5 chunks
+        "full_chunks": [{"text": c} for c in chunks],
+        "total_chunks": len(chunks),
+    }
+    update_stage("chunk", chunk_data)
+    return chunks
+
+def run_chunk_step():
+    """
+    Trigger for Step 2: Chunk Context.
+    Retrieves the uploaded text from session state and, when the button is pressed,
+    calls chunk_text() to process the text and update the pipeline stage.
+    A unique key is provided for the button to avoid duplicate element IDs.
+    """
+    st.subheader("Step 2: Chunk Context")
+    upload_data = st.session_state.get("upload_data") or {}
+    raw_text = upload_data.get("content", "")
+    if st.button("Run Step 2: Chunk Context", key="run_chunk_step_button"):
+        if raw_text:
+            chunks = chunk_text(raw_text)
+            st.write("DEBUG: chunk_text() -> final chunked list:", chunks)
+        else:
+            st.warning("No text in 'upload_data'. Make sure Step 1 is done.")
+
+
+
+
+
 ##############################################################################
 # 10) MAIN STREAMLIT APP
 ##############################################################################
-
 def main():
     global chroma_client
 
@@ -1736,6 +1859,12 @@ def main():
                 st.info("No user accounts found.")
 
 
+    if "upload_data" not in st.session_state:
+        st.session_state["upload_data"] = {"content": "", "preview": "", "size": 0}
+    
+    # Run the pipeline's Step 2: Chunk Context.
+    run_chunk_step()
+
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
     col1, spacer, col2 = st.columns([1.3, 0.3, 2])
     
@@ -1828,7 +1957,7 @@ def main():
         st.subheader("Step 1: Upload Context")
 
         # Define the reverse text order checkbox BEFORE the form.
-        reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=True)
+        # reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=True)
 
         # Wrap the uploader in a form with clear_on_submit=True.
         with st.form("upload_form", clear_on_submit=True):
@@ -1843,7 +1972,7 @@ def main():
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
-                    text = extract_text_from_file(uploaded_file, reverse=reverse_text_order)
+                    text = extract_text_from_file(uploaded_file)
                     if text:
                         combined_text += f"\n\n---\n\n{text}"
                 if combined_text:
@@ -1859,20 +1988,11 @@ def main():
         st.subheader("Step 2: Chunk Context")
         if st.button("Run Step 2: Chunk Context"):
             if st.session_state.uploaded_text:
-                # If the reverse checkbox is ticked, we assume the extracted text is reversed.
-                # Reverse it again to restore its original (canonical) order before chunking.
-                if reverse_text_order:
-                    processed_text = "\n".join(st.session_state.uploaded_text.splitlines()[::-1])
-                    st.write("DEBUG: Re-reversed text for processing.")
-                else:
-                    processed_text = st.session_state.uploaded_text
-
-                # Now pass the processed text (in normal order) to the chunking function.
-                chunks = split_text_into_chunks(processed_text)
+                chunks = split_text_into_chunks(st.session_state.uploaded_text)
                 st.session_state.chunks = chunks
                 st.success(f"Text chunked into {len(chunks)} segments.")
             else:
-                st.warning("Please upload at least one document first.")
+                st.warning("Please upload min. 1 document first.")
         
         # --- Step 3: Embed Context ---
         st.subheader("Step 3: Embed Context")
