@@ -476,27 +476,73 @@ def is_valid_country_code(code: str) -> bool:
 def split_text_into_chunks(text: str) -> List[dict]:
     """
     Splits the input text into chunks based on country markers.
-    Debug prints are added to log the matching process.
-    Each chunk produced will have associated metadata with a 'country_code'.
+    Each chunk is tagged with a 'country_code' (from valid markers).
+    Regions containing incomplete marker patterns are omitted,
+    and only free text (with no marker pattern) is processed via fallback.
+    User-visible warnings are displayed if invalid markers or unmatched markers are detected.
     """
-    # Update the upload stage so you can see the raw text info.
+    from typing import List
+    import re
+
     update_stage('upload', {'content': text, 'size': len(text)})
+    canonical_text = ensure_canonical_order(text)
+
+    # Loose pattern for all markers.
+    loose_pattern = re.compile(r'=+\s*(?:END\s+OF\s+)?([A-Za-z0-9]+)\s*=+')
+    loose_markers = set(loose_pattern.findall(canonical_text))
     
-    # DEBUG: Print the first 500 characters of the text to inspect markers.
-    st.write("DEBUG: Text snippet (first 500 chars):", text[:500])
-    
-    # Revised regex pattern: enforce that the end marker's country matches the start marker.
-    pattern = re.compile(
-        r'(=+\s*(?P<country>[A-Z]{2,3})\s*=+)'   # Start marker with country code
-        r'(.*?)'                                 # Content (non-greedy)
-        r'(=+\s*END\s+OF\s+(?P=country)\s*=+)',    # End marker: backreference to the start's country
+    # Strict regex (with backreference).
+    strict_pattern = re.compile(
+        r'(=+\s*(?P<country>[A-Z]{2,3})\s*=+)'   # Start marker
+        r'(.*?)'                                 # Content
+        r'(=+\s*END\s+OF\s+(?P=country)\s*=+)',    # End marker
         flags=re.DOTALL | re.IGNORECASE
     )
+    matches = list(strict_pattern.finditer(canonical_text))
+    matched_markers = set(m.group("country").upper() for m in matches)
     
-    matches = list(pattern.finditer(text))
+    # Identify invalid markers.
+    invalid_markers = []
+    for marker in loose_markers:
+        marker_up = marker.upper()
+        if marker_up not in {m.upper() for m in matched_markers}:
+            if not is_valid_country_code(marker_up):
+                invalid_markers.append(marker)
+    
+    # Identify unmatched start markers.
+    start_marker_pattern = re.compile(r'=+\s*(?!END\s+OF\s+)([A-Z]{2,3})\s*=+')
+    all_start_markers = [(m.group(1).upper(), m.start()) for m in start_marker_pattern.finditer(canonical_text)]
+    strict_spans = [(m.start(), m.end()) for m in matches]
+    unmatched_start_markers = []
+    for code, pos in all_start_markers:
+        if not any(start <= pos < end for start, end in strict_spans):
+            unmatched_start_markers.append(code)
+    
+    # Identify unmatched end markers.
+    end_marker_pattern = re.compile(r'=+\s*END\s+OF\s+([A-Z]{2,3})\s*=+')
+    all_end_markers = [(m.group(1).upper(), m.start()) for m in end_marker_pattern.finditer(canonical_text)]
+    unmatched_end_markers = []
+    for code, pos in all_end_markers:
+        if code in {m.upper() for m in invalid_markers}:
+            continue
+        if not any(start <= pos < end for start, end in strict_spans):
+            unmatched_end_markers.append(code)
+    
+    # Display warnings.
+    if invalid_markers:
+        st.warning("Warning: The following invalid country markers were detected; the relevant text section was thus skipped: " +
+                   ", ".join(invalid_markers))
+    if unmatched_start_markers:
+        st.warning("Warning: The following start markers are missing a matching end marker; the relevant text section was thus skipped: " +
+                   ", ".join(unmatched_start_markers))
+    if unmatched_end_markers:
+        st.warning("Warning: The following end markers are missing a matching start marker; the relevant text section was thus skipped: " +
+                   ", ".join(unmatched_end_markers))
+    
+    # Debug prints...
+    st.write("DEBUG: Text snippet (first 500 chars):", text[:500])
+    st.write("DEBUG: Canonical Text snippet (first 500 chars):", canonical_text[:500])
     st.write(f"DEBUG: Found {len(matches)} regex match(es) for country blocks.")
-    
-    # Log details for each match.
     for i, m in enumerate(matches):
         st.write(f"DEBUG: Match {i+1}:")
         st.write("  Full match:", m.group(0))
@@ -504,44 +550,89 @@ def split_text_into_chunks(text: str) -> List[dict]:
         st.write("  Detected country (start):", m.group("country"))
         st.write("  Block content snippet (first 300 chars):", m.group(3)[:300])
         st.write("  End marker:", m.group(4))
+    st.write("DEBUG: All markers detected (loose):", loose_markers)
+    st.write("DEBUG: Markers processed by strict regex:", matched_markers)
+    st.write("DEBUG: Unmatched start markers:", unmatched_start_markers)
+    st.write("DEBUG: Unmatched end markers:", unmatched_end_markers)
     
     all_chunks = []
     
+    # Process prefix, blocks, gaps, and suffix as before...
     if matches:
-        # Use the regex matches to extract chunks.
-        for m in matches:
+        first_match_start = matches[0].start()
+        prefix_text = canonical_text[:first_match_start].strip()
+        if prefix_text and not re.search(loose_pattern, prefix_text):
+            st.write("DEBUG: Processing prefix text (before first marker) as fallback.")
+            prefix_iso = detect_country_in_text_fallback(prefix_text) or "UNKNOWN"
+            prefix_chunks = chunk_by_paragraph_or_size(prefix_text, iso_code=prefix_iso)
+            all_chunks.extend(prefix_chunks)
+    
+    if matches:
+        for i, m in enumerate(matches):
             country_code = m.group("country")
             block_content = m.group(3)
             st.write("DEBUG: Processing block for country:", country_code)
             st.write("DEBUG: Block content snippet (first 300 chars):", block_content[:300])
-            
-            # Handle special cases (e.g., "USA" -> "US", "UK" -> "GB", etc.)
             iso_code = handle_country_code_special_cases(country_code)
-            # Break the block into smaller chunks.
-            sub_chunks = chunk_by_paragraph_or_size(block_content, iso_code=iso_code)
-            all_chunks.extend(sub_chunks)
-    else:
-        # If no regex match was found, fall back to naive detection.
+            block_chunks = chunk_by_paragraph_or_size(block_content, iso_code=iso_code)
+            all_chunks.extend(block_chunks)
+            
+            if i < len(matches) - 1:
+                gap_start = m.end()
+                gap_end = matches[i+1].start()
+                gap_text = canonical_text[gap_start:gap_end].strip()
+                if gap_text and not re.search(loose_pattern, gap_text):
+                    st.write(f"DEBUG: Processing gap text between marker {i+1} and marker {i+2} as fallback.")
+                    gap_iso = detect_country_in_text_fallback(gap_text) or "UNKNOWN"
+                    gap_chunks = chunk_by_paragraph_or_size(gap_text, iso_code=gap_iso)
+                    all_chunks.extend(gap_chunks)
+    
+    if matches:
+        last_match_end = matches[-1].end()
+        suffix_text = canonical_text[last_match_end:].strip()
+        if suffix_text and not re.search(loose_pattern, suffix_text):
+            st.write("DEBUG: Processing suffix text (after last marker) as fallback.")
+            suffix_iso = detect_country_in_text_fallback(suffix_text) or "UNKNOWN"
+            suffix_chunks = chunk_by_paragraph_or_size(suffix_text, iso_code=suffix_iso)
+            all_chunks.extend(suffix_chunks)
+    
+    if not matches:
         st.write("DEBUG: No country block matches found. Falling back to naive country detection.")
-        iso_code = detect_country_in_text_fallback(text)
-        st.write("DEBUG: Fallback detected country:", iso_code)
-        sub_chunks = chunk_by_paragraph_or_size(text, iso_code=iso_code if iso_code else "UNKNOWN")
-        all_chunks.extend(sub_chunks)
+        fallback_iso = detect_country_in_text_fallback(canonical_text) or "UNKNOWN"
+        st.write("DEBUG: Fallback detected country:", fallback_iso)
+        fallback_chunks = chunk_by_paragraph_or_size(canonical_text, iso_code=fallback_iso)
+        all_chunks.extend(fallback_chunks)
+    
+    # --- Filter Out Spurious Chunks (e.g., those that are just '---') ---
+    all_chunks = [chunk for chunk in all_chunks if chunk["text"].strip() != "---"]
     
     st.write("DEBUG: Total number of chunks produced:", len(all_chunks))
     
-    # Prepare a preview dictionary.
     chunk_preview_data = {
         "chunks": [f"{c['text'][:300]}..." for c in all_chunks[:5]],
-        "full_chunks": [ {"text": c["text"], "country": c["metadata"].get("country_code", "UNKNOWN")} 
-                         for c in all_chunks ],
+        "full_chunks": [{"text": c["text"], "country": c["metadata"].get("country_code", "UNKNOWN")}
+                        for c in all_chunks],
         "total_chunks": len(all_chunks)
     }
     
-    # Update the pipeline stage for chunking.
     update_stage('chunk', chunk_preview_data)
     
     return all_chunks
+
+def ensure_canonical_order(text: str) -> str:
+    """
+    Checks if the text appears to be in reversed order.
+    If the first non-empty line starts with "END OF", assume the text is reversed
+    and return it re-reversed (canonical order). Otherwise, return the text as-is.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            if stripped.upper().startswith("END OF"):
+                st.write("DEBUG: Text appears reversed. Reversing it to canonical order.")
+                return "\n".join(text.splitlines()[::-1])
+            break
+    return text
 
 def chunk_by_paragraph_or_size(block_content: str, iso_code: str, max_length: int = 1200) -> List[dict]:
     """
