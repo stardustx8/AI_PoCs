@@ -1554,18 +1554,18 @@ import unicodedata
 def ensure_canonical_order(text: str) -> str:
     """
     Examines the text and reverses it if it appears reversed.
-    This function skips over any lines that are composed solely of dashes
-    (e.g. '---') so that the first meaningful line is used for detection.
+    This function skips any lines composed solely of dashes (e.g. '---')
+    so that the first meaningful line is used for detection.
     
     If that first non-dash line contains "END OF" (ignoring extra marker characters),
-    the text is assumed to be reversed and is flipped (line-by-line). Otherwise,
-    the original text is returned.
+    the text is assumed to be reversed and is flipped line-by-line.
+    Otherwise, the original text is returned.
     """
     lines = text.splitlines()
     st.write(f"DEBUG: ensure_canonical_order -> total lines read: {len(lines)}")
     for raw_line in lines:
         stripped = raw_line.strip()
-        # Skip lines that are solely dashes (e.g. '---')
+        # Skip lines that are only dashes.
         if stripped and not re.fullmatch(r"[-]+", stripped):
             st.write(f"DEBUG: First non-dash non-empty line => {repr(stripped)}")
             if re.search(r"END OF", stripped, flags=re.IGNORECASE):
@@ -1598,11 +1598,13 @@ def chunk_text(text: str) -> list[str]:
       - "================== END OF US =================="
     
     Steps:
-      1) Call ensure_canonical_order() to get the canonical text.
-      2) Remove any lines that consist solely of dashes (which may interfere with marker detection).
-      3) Split the cleaned text using a regex pattern (with re.IGNORECASE).
-      4) If no chunks are produced, fall back to returning the entire cleaned text as one chunk.
-      5) Update the "upload" stage (with the canonical text) and the "chunk" stage (with a preview of chunk data).
+      1) Call ensure_canonical_order() to obtain the canonical text.
+      2) Remove any lines composed solely of dashes from the canonical text.
+      3) Split the cleaned text using a regex pattern (with IGNORECASE).
+      4) If exactly three parts are produced (i.e. [start marker, content, end marker])
+         and both the first and last parts match the marker pattern fully, use only the inner content as the chunk.
+      5) If fewer than 2 parts result, fall back to using the entire cleaned text as one chunk.
+      6) Update the "upload" stage (with the canonical text) and the "chunk" stage (with a preview of the chunk data).
     """
     # 1) Canonicalize the text.
     canonical_text = ensure_canonical_order(text)
@@ -1615,19 +1617,28 @@ def chunk_text(text: str) -> list[str]:
     cleaned_text = "\n".join(cleaned_lines)
     st.write("DEBUG: Cleaned canonical text (first 80 chars):", repr(cleaned_text[:80]))
     
-    # 3) Split using regex (with IGNORECASE).
+    # 3) Split the cleaned text using regex (with IGNORECASE).
     pattern = r"(={5,}\s*(?:CH|US|END OF CH|END OF US)\s*={5,})"
     chunks = re.split(pattern, cleaned_text, flags=re.IGNORECASE)
     chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
     st.write(f"DEBUG: chunk_text() -> raw chunks: {chunks}")
     
-    # 4) Fallback: if splitting yields less than 2 chunks, use full cleaned text as one chunk.
+    # 4) If exactly three parts are produced and the first and last match the marker pattern,
+    #    then use only the inner content as the single chunk.
+    if len(chunks) == 3:
+        if (re.fullmatch(pattern, chunks[0], flags=re.IGNORECASE) and
+            re.fullmatch(pattern, chunks[2], flags=re.IGNORECASE)):
+            st.write("DEBUG: Detected complete block markers; using inner content as the chunk.")
+            chunks = [chunks[1]]
+    
+    # 5) Fallback: if fewer than 2 chunks are produced, use the entire cleaned text as one chunk.
     if len(chunks) < 2:
-        st.write("DEBUG: No chunks found by regex. Using full text as one chunk.")
+        st.write("DEBUG: No chunks found by regex. Using full cleaned text as one chunk.")
         chunks = [cleaned_text]
+    
     st.write(f"DEBUG: chunk_text() -> final chunks: {chunks}")
     
-    # 5) Update the "upload" stage with the canonical text.
+    # 6) Update the "upload" stage with the canonical text.
     upload_data = st.session_state.get("upload_data") or {}
     upload_data.update({
         "content": canonical_text,
@@ -1637,9 +1648,9 @@ def chunk_text(text: str) -> list[str]:
     st.write("DEBUG: Overwriting 'upload' stage data with canonical text.")
     update_stage("upload", upload_data)
     
-    # 6) Update the "chunk" stage with chunk preview data.
+    # 7) Update the "chunk" stage with a preview of chunk data.
     chunk_data = {
-        "chunks": chunks[:5],  # short preview of first 5 chunks
+        "chunks": chunks[:5],  # short preview: first 5 chunks
         "full_chunks": [{"text": c} for c in chunks],
         "total_chunks": len(chunks),
     }
@@ -1662,6 +1673,7 @@ def run_chunk_step():
             st.write("DEBUG: chunk_text() -> final chunked list:", chunks)
         else:
             st.warning("No text in 'upload_data'. Make sure Step 1 is done.")
+
 
 
 
