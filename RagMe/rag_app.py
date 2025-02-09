@@ -222,41 +222,62 @@ import streamlit as st  # optional if you want to log warnings
 import openai
 
 class LLMCountryDetector:
-    """
-    Minimal class that uses an OpenAI ChatCompletion call to detect countries
-    in multi-lingual text. It returns ISO alpha-2 codes as a list, e.g. ["CH","US"].
-    """
-
     SYSTEM_PROMPT = """
-        You are a specialized assistant for detecting countries in text.
-        Your goal: given a snippet of text in ANY language, identify
-        all distinct countries mentioned in it, and convert them
-        to their ISO alpha-2 codes (uppercase).
+        You are a specialized assistant for extracting explicit or implicit
+        references to countries in ANY user text. You must detect:
 
-        Output must be strictly valid JSON array, e.g.:
-         ["DE","CH"]
-        If no countries are found, output [].
+        1. FULL NAMES (highest priority):
+           - "Switzerland", "United States", "United States of America"
+           - "America", "The United States", "USA"
+           
+        2. Historical/Alternative Names:
+           - "Helvetia", "Swiss", "Schweiz" => "CH"
+           - "US", "American", "the States" => "US"
+           
+        3. Contextual References:
+           - "Swiss law", "Swiss banking" => "CH"
+           - "US right", "American system" => "US"
+           - "Federal law" (in US context) => "US"
 
-        Important:
-        - If multiple countries appear, list them all once.
-        - If there's an ambiguous mention (like 'Georgia'), ignore it or guess.
-        - Use uppercase alpha-2 codes (like 'DE', 'CH', 'US', 'GB').
-        - No extra text in your output, only valid JSON.
-    """.strip()
+        IMPORTANT: You MUST detect full country names like "Switzerland" or 
+        "United States" even when they appear alone without context.
+        
+        Examples of what you MUST detect:
+        Input: "Switzerland has strict laws"
+        Output: [{"detected_phrase": "Switzerland", "code": "CH"}]
+        
+        Input: "United States regulations"
+        Output: [{"detected_phrase": "United States", "code": "US"}]
+        
+        Input: "Switzerland or United States?"
+        Output: [
+            {"detected_phrase": "Switzerland", "code": "CH"},
+            {"detected_phrase": "United States", "code": "US"}
+        ]
+
+        You must output a JSON array of objects with:
+           { "detected_phrase": "exact text from input", "code": "XX" }
+        
+        - "code" must be the ISO alpha-2 code in uppercase (2 letters)
+        - "detected_phrase" must be the exact snippet from input
+        - If no countries found, output []
+        
+        Output ONLY valid JSON, no extra text.""".strip()
 
     def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
-        openai.api_key = api_key
+        self.client = OpenAI(api_key=api_key)  # Create client instance
         self.model = model
 
-    def detect_countries_in_text(self, text: str):
-        """
-        Return a list of uppercase ISO codes. E.g. ["CH","US"].
-        If none found, return [].
-        """
+    def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => LLMCountryDetector processing text: '{text}'")
+            
         if not text.strip():
             return []
+
         try:
-            response = openai.ChatCompletion.create(
+            # Use the new v1.0.0 API format
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
@@ -264,13 +285,36 @@ class LLMCountryDetector:
                 ],
                 temperature=0.0
             )
+            
+            # Extract content using the new response format
             raw_content = response.choices[0].message.content.strip()
-            codes = json.loads(raw_content)
-            # Filter out anything that isn't 2 uppercase letters
-            valid = [c for c in codes if len(c) == 2 and c.isupper()]
-            return list(set(valid))  # unique
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => LLM raw response: {raw_content}")
+
+            data = json.loads(raw_content)
+            if not isinstance(data, list):
+                return []
+            
+            # Filter out invalid objects or duplicates
+            used_codes = set()
+            results = []
+            for item in data:
+                phrase = item.get("detected_phrase", "").strip()
+                code = item.get("code", "")
+                if len(code) == 2 and code.isupper() and phrase:
+                    if code not in used_codes:
+                        results.append({"detected_phrase": phrase, "code": code})
+                        used_codes.add(code)
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Final detection results: {results}")
+                
+            return results
+            
         except Exception as e:
-            print(f"[LLMCountryDetector] Error: {e}")
+            if DEBUG_MODE:
+                st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
             return []
 
     def detect_first_country_in_text(self, text: str):
@@ -361,12 +405,21 @@ if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
 def update_stage(stage: str, data=None):
     """
     Unifies BOTH of your old update_stage functions into a single approach,
-    ensuring each stage’s data is handled consistently and we have debug logs.
+    ensuring each stage's data is handled consistently and we have debug logs.
     """
-
-    # Debug: show raw data
+    
+    # Debug: show raw data (with special handling for 'embed' stage)
     if DEBUG_MODE:
-        st.write(f"DEBUG => update_stage called with stage='{stage}', raw data={data}")
+        if stage == 'embed':
+            debug_data = {
+                "dimensions": data.get("dimensions", 0),
+                "total_vectors": data.get("total_vectors", 0),
+                "preview_note": data.get("preview_note", ""),
+                "sample_tokens": data.get("token_breakdowns", [])[0][:2] if data.get("token_breakdowns") else []
+            }
+            st.write(f"DEBUG => update_stage called with stage='{stage}', condensed embed data:", debug_data)
+        else:
+            st.write(f"DEBUG => update_stage called with stage='{stage}', raw data={data}")
 
     # Always store the raw data to session right away
     st.session_state[f'{stage}_data'] = data
@@ -439,9 +492,6 @@ def update_stage(stage: str, data=None):
 
     elif stage == 'generate':
         # For "generate" stage
-        #if DEBUG_MODE:
-        #    st.write(f"DEBUG => In generate block => data={data}")
-        # ensure 'answer' key is present
         if isinstance(data, dict) and 'answer' not in data:
             enhanced_data['answer'] = ''
             if DEBUG_MODE:
@@ -450,9 +500,17 @@ def update_stage(stage: str, data=None):
     # Store final "enhanced_data" in session state
     st.session_state[f'{stage}_data'] = enhanced_data
 
-    # Debug print
+    # Debug print (special handling for 'embed' stage)
     if DEBUG_MODE:
-        st.write(f"DEBUG => st.session_state[{stage}_data] updated => {enhanced_data}")
+        if stage == 'embed':
+            debug_data = {
+                "dimensions": enhanced_data.get("dimensions", 0),
+                "total_vectors": enhanced_data.get("total_vectors", 0),
+                "sample_preview": "Debug preview truncated..."
+            }
+            st.write(f"DEBUG => st.session_state[{stage}_data] updated => {debug_data}")
+        else:
+            st.write(f"DEBUG => st.session_state[{stage}_data] updated => {enhanced_data}")
 
     # If a RAGState object is in session, update it
     if 'rag_state' in st.session_state:
@@ -917,26 +975,31 @@ def embed_text(
     response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
     embeddings = [item.embedding for item in response.data]
     
+    # Limit token breakdowns to first 2 chunks only
     token_breakdowns = []
-    for text, embedding in zip(safe_texts, embeddings):
-        # Take first 10 words for token breakdown to avoid visualization issues
-        tokens = text.split()[:10]
+    for text, embedding in zip(safe_texts[:2], embeddings[:2]):  # Only first 2 chunks
+        # Take first 5 words for token breakdown
+        tokens = text.split()[:5]  # Only first 5 words
         breakdown = []
         if tokens:
             segment_size = len(embedding) // len(tokens)
             for i, tok in enumerate(tokens):
                 start = i * segment_size
                 end = start + segment_size
-                snippet = embedding[start:min(end, len(embedding))]
-                breakdown.append({"token": tok, "vector_snippet": snippet[:10]})
+                # Show only first 3 dimensions of each token's vector
+                snippet = embedding[start:min(end, len(embedding))][:3]  # Only first 3 dimensions
+                # Round the numbers to 4 decimal places
+                snippet = [round(x, 4) for x in snippet]
+                breakdown.append({"token": tok, "vector_snippet": snippet})
         token_breakdowns.append(breakdown)
     
     embedding_data = {
-        "embeddings": embeddings,
+        "embeddings": embeddings,  # Keep full embeddings
         "dimensions": len(embeddings[0]) if embeddings else 0,
-        "preview": embeddings[0][:10] if embeddings else [],
+        "preview": [round(x, 4) for x in embeddings[0][:5]] if embeddings else [],  # Show only first 5 dimensions
         "total_vectors": len(embeddings),
-        "token_breakdowns": token_breakdowns
+        "token_breakdowns": token_breakdowns,
+        "preview_note": "(Showing first 2 chunks, 5 words each, 3 dimensions per word)"
     }
     
     if update_stage_flag:
@@ -1352,17 +1415,23 @@ def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[
 
 
 def query_collection(query: str, collection_name: str, n_results: int = 3):
-    """
-    Enhanced query function that uses an LLM-based country detector
-    and supports multiple country codes in a single query.
-    """
+    """Enhanced country detection with proper ChromaDB querying"""
     if DEBUG_MODE:
-        st.write(f"DEBUG => Entering query_collection() with query='{query}', collection_name='{collection_name}'")
+        st.write(f"DEBUG => Processing query: '{query}'")
 
-    # Initialize the LLM-based detector
     llm_detector = LLMCountryDetector(api_key=st.session_state["api_key"])
-    
-    # Create/load collection and check doc count
+    detected_list = llm_detector.detect_countries_in_text(query)
+
+    # Always show country detection results
+    if detected_list:
+        country_list = [f"'{item['detected_phrase']}' → {item['code']}" for item in detected_list]
+        st.write("🌍 **Countries Detected in Query:**")
+        for country in country_list:
+            st.write(f"  • {country}")
+    else:
+        #if DEBUG_MODE:
+        st.write("❌ No country codes detected in query")
+
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
@@ -1375,80 +1444,75 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
         st.warning("No documents found in collection. Please upload first.")
         return [], []
     
-    # 1) Detect all countries in the user's query (multi-language)
-    iso_codes = llm_detector.detect_countries_in_text(query)  # e.g. ["CH", "US"]
-    
-    # For debugging
-    if iso_codes:
-        st.write(f"Detected country code(s): {iso_codes}")
-    else:
-        if DEBUG_MODE:
-            st.write("DEBUG => No country codes detected at all.")
-    
-    # 2) If we found one or more ISO codes, do an 'IN' filter
-    if iso_codes:
-        results = coll.query(
-            query_texts=[query],
-            where={"country_code": {"$in": iso_codes}},
-            n_results=n_results
-        )
-        retrieved_passages = results.get("documents", [[]])[0]
-        retrieved_metadata = results.get("metadatas", [[]])[0]
+    # Get ISO codes from detected countries
+    iso_codes = [d["code"] for d in detected_list]
 
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Found {len(retrieved_passages)} passages for codes={iso_codes}")
-
-        # If we don't get enough results, do a fallback search on all the other countries
-        if len(retrieved_passages) < n_results:
-            st.write(f"Found only {len(retrieved_passages)} results for {iso_codes}. "
-                     "Supplementing general search outside these codes...")
-            remaining_results = n_results - len(retrieved_passages)
-            # Fallback with "country_code" not in iso_codes
-            additional_results = coll.query(
+    if iso_codes:
+        # Instead of using $in, we'll query for each country separately and combine results
+        all_passages = []
+        all_metadata = []
+        seen_passages = set()  # To avoid duplicates
+        
+        for code in iso_codes:
+            results = coll.query(
                 query_texts=[query],
-                where={"country_code": {"$nin": iso_codes}},
-                n_results=remaining_results
+                where={"country_code": code},  # Simple equality check for each code
+                n_results=n_results
             )
-            add_pass = additional_results.get("documents", [[]])[0]
-            add_meta = additional_results.get("metadatas", [[]])[0]
-            retrieved_passages.extend(add_pass)
-            retrieved_metadata.extend(add_meta)
-            if DEBUG_MODE:
-                st.write(f"DEBUG => After supplement => total passages={len(retrieved_passages)}")
-
+            
+            curr_passages = results.get("documents", [[]])[0]
+            curr_metadata = results.get("metadatas", [[]])[0]
+            
+            # Add only non-duplicate passages
+            for p, m in zip(curr_passages, curr_metadata):
+                if p not in seen_passages:
+                    all_passages.append(p)
+                    all_metadata.append(m)
+                    seen_passages.add(p)
+        
+        # If we still need more results
+        if len(all_passages) < n_results:
+            # Get additional results excluding the countries we already queried
+            other_results = coll.query(
+                query_texts=[query],
+                n_results=(n_results - len(all_passages))
+            )
+            
+            other_passages = other_results.get("documents", [[]])[0]
+            other_metadata = other_results.get("metadatas", [[]])[0]
+            
+            # Add only non-duplicate passages
+            for p, m in zip(other_passages, other_metadata):
+                if p not in seen_passages:
+                    all_passages.append(p)
+                    all_metadata.append(m)
+                    seen_passages.add(p)
     else:
-        # 3) If no countries are detected, do a normal search with no filter
+        # If no countries detected, do a standard search
         if DEBUG_MODE:
             st.write("DEBUG => Doing standard search with no country filter.")
         results = coll.query(
             query_texts=[query],
             n_results=n_results
         )
-        retrieved_passages = results.get("documents", [[]])[0]
-        retrieved_metadata = results.get("metadatas", [[]])[0]
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Found {len(retrieved_passages)} passages (no country filter).")
+        all_passages = results.get("documents", [[]])[0]
+        all_metadata = results.get("metadatas", [[]])[0]
 
-    # 4) Update pipeline stage
+    # Update pipeline stage
     if DEBUG_MODE:
-        st.write(f"DEBUG => Will call update_stage('retrieve', ...) with passages={len(retrieved_passages)}, "
-                 f"metadata={len(retrieved_metadata)}")
-
+        st.write(f"DEBUG => Retrieved {len(all_passages)} passages")
+        
     update_stage('retrieve', {
-        "passages": retrieved_passages or [],
-        "metadata": retrieved_metadata or []
+        "passages": all_passages or [],
+        "metadata": all_metadata or []
     })
 
-    if DEBUG_MODE:
-        st.write(f"DEBUG => After update_stage('retrieve'), st.session_state['retrieve_data'] => "
-                 f"{st.session_state.get('retrieve_data')}")
-        st.write(f"DEBUG => Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
+    if all_passages:
+        # Print which countries appear in the retrieved chunk metadata
+        countries_found = set(meta.get('country_code', 'Unknown') for meta in all_metadata)
+        st.write(f"Total countries in database: {', '.join(countries_found)}")
 
-    if retrieved_passages:
-        countries_found = set(meta.get('country_code', 'Unknown') for meta in retrieved_metadata)
-        st.write(f"Countries in database: {', '.join(countries_found)}")
-
-    return retrieved_passages, retrieved_metadata
+    return all_passages, all_metadata
 
 
 ##############################################################################
