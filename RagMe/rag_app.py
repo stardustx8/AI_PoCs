@@ -740,7 +740,8 @@ def update_stage(stage: str, data=None):
 
     elif stage == 'generate':
         # For "generate" stage
-        st.write(f"DEBUG => In generate block => data={data}")
+        #if DEBUG_MODE:
+        #    st.write(f"DEBUG => In generate block => data={data}")
         # ensure 'answer' key is present
         if isinstance(data, dict) and 'answer' not in data:
             enhanced_data['answer'] = ''
