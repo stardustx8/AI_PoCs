@@ -1734,12 +1734,11 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
 
     if DEBUG_MODE:
         st.write(f"DEBUG => After update_stage('retrieve'), st.session_state['retrieve_data'] => {st.session_state.get('retrieve_data')}")
-
-    st.write(f"Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
+        st.write(f"DEBUG => Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
 
     if retrieved_passages:
         countries_found = set(meta.get('country_code', 'Unknown') for meta in retrieved_metadata)
-        st.write(f"Results include information from: {', '.join(countries_found)}")
+        st.write(f"Countries in database: {', '.join(countries_found)}")
 
     return retrieved_passages, retrieved_metadata
 
