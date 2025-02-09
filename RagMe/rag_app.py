@@ -1569,8 +1569,9 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
         if DEBUG_MODE:
             st.write("DEBUG => No completion or empty choices; defaulting answer to ''")
         answer = ""
-
-    st.write(f"DEBUG => Received answer of length={len(answer)}")
+        
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Received answer of length={len(answer)}")
 
     # Mark stage=generate in the pipeline
     update_stage('generate', {'answer': answer})
