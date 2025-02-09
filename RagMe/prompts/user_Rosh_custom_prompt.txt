@@ -24,7 +24,7 @@
   </INSTRUCTIONS>
 
   <STRUCTURE>
-    <!-- Two possible cases for final output -->
+    <REMARKS_TO_STRUCTURE>      - VERY IMPORTANT: Translate all of the following elements to the user's query language.    </REMARKS_TO_STRUCTURE>    <!-- Two possible cases for final output -->
 
     <!-- Case A: Document-based answer (when RAG doc is relevant) -->
     <CASEA>
