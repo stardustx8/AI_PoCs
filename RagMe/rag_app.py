@@ -9,6 +9,7 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
+DEBUG_MODE = False  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
@@ -538,11 +539,23 @@ class CountryDetector:
         text_upper = text.upper()
         text_lower = text.lower()
 
-        for match in re.finditer(r'\b([A-Z]{2,3})\b', text_upper):
-            iso_code = self.get_iso_alpha2(match.group(1))
+        COMMON_STOPWORDS = {
+            # English stopwords
+            "ARE", "AND", "FOR", "THE", "WAS", "WERE", "HAS", "HAVE", "IS", "IN",
+            "OF", "TO", "A", "AN", "AT", "BY", "FROM", "IT", "ON", "AS",
+            # German stopwords
+            "UND", "DER", "DIE", "DAS", "IST", "IN", "DES", "DEN", "EIN", "EINE",
+            "MIT", "AUF", "FÜR", "NICHT", "WAR", "SIND", "HAT", "HABEN", "ICH", "DU", "AB", "ZU"
+        }
+
+        for match in re.finditer(r'\b([A-Z]{2,3})\b', text.upper()):
+            token = match.group(1)
+            # Skip tokens that are common stopwords in English or German
+            if token in COMMON_STOPWORDS:
+                continue
+            iso_code = self.get_iso_alpha2(token)
             if iso_code:
                 return iso_code
-
         for alpha2, data in self.country_mapping.items():
             if len(alpha2) == 2:
                 for known_name in data['names']:
@@ -644,46 +657,105 @@ if 'rag_state' not in st.session_state or st.session_state.rag_state is None:
 # 4) PIPELINE STAGE HELPER FUNCTIONS
 ##############################################################################
 def update_stage(stage: str, data=None):
+    """
+    Unifies BOTH of your old update_stage functions into a single approach,
+    ensuring each stage’s data is handled consistently and we have debug logs.
+    """
+
+    # Debug: show raw data
+    if DEBUG_MODE:
+        st.write(f"DEBUG => update_stage called with stage='{stage}', raw data={data}")
+
+    # Always store the raw data to session right away
     st.session_state[f'{stage}_data'] = data
-    st.session_state.current_stage = stage
-    
-    if data is not None:
-        if stage == 'embed' and isinstance(data, dict):
-            enhanced_data = data
+    st.session_state["current_stage"] = stage
+
+    # If data is None, we convert it to an empty dict so we don't get errors.
+    if data is None:
+        data = {}
+
+    # We'll create an "enhanced_data" that the pipeline UI uses.
+    # If data is a dict, copy it, else store it under {'data': data}
+    if isinstance(data, dict):
+        enhanced_data = data.copy()
+    else:
+        enhanced_data = {"data": data}
+
+    # Stage-specific logic
+    if stage == 'upload':
+        # For the "upload" stage
+        if isinstance(data, dict):
+            text = data.get('content', '')
         else:
-            enhanced_data = data.copy() if isinstance(data, dict) else {'data': data}
-        if stage == 'upload':
-            text = data.get('content', '') if isinstance(data, dict) else data
-            enhanced_data['preview'] = text[:600] if text else None
-            enhanced_data['full'] = text
-        elif stage == 'chunk':
-            # For chunk stage, expect the keys "chunks" and "total_chunks"
-            if isinstance(data, dict) and 'chunks' in data and 'total_chunks' in data:
-                enhanced_data = data
-            elif isinstance(data, list):
-                enhanced_data = {'chunks': data[:5], 'total_chunks': len(data)}
-            else:
-                enhanced_data = {'data': data}
-        elif stage == 'store':
-            enhanced_data['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S')
-        elif stage == 'query':
-            enhanced_data = data.copy() if isinstance(data, dict) else {'query': data}
-        elif stage == 'retrieve':
-            if isinstance(data, dict):
-                enhanced_data = {
-                    'passages': data.get("passages"),
-                    'scores': [0.95, 0.87, 0.82],
-                    'metadata': data.get("metadata")
-                }
-            else:
-                enhanced_data = {
-                    'passages': data[0],
-                    'scores': [0.95, 0.87, 0.82],
-                    'metadata': data[1]
-                }
-        st.session_state[f'{stage}_data'] = enhanced_data
-        if 'rag_state' in st.session_state:
-            st.session_state.rag_state.set_stage(stage, enhanced_data)
+            text = str(data)
+        enhanced_data['preview'] = text[:600] if text else None
+        enhanced_data['full'] = text
+
+    elif stage == 'chunk':
+        # For "chunk" stage
+        if isinstance(data, dict) and 'chunks' in data and 'total_chunks' in data:
+            # it already has them
+            enhanced_data = data
+        elif isinstance(data, list):
+            # We have a list of chunks
+            enhanced_data = {'chunks': data[:5], 'total_chunks': len(data)}
+        else:
+            enhanced_data = {'data': data}
+
+    elif stage == 'store':
+        # For "store" stage, we record a timestamp
+        enhanced_data['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S')
+
+    elif stage == 'query':
+        # For "query" stage, no special logic
+        if not isinstance(data, dict):
+            enhanced_data = {'query': str(data)}
+
+    elif stage == 'retrieve':
+        # **Critical** to ensure the pipeline sees a consistent shape
+        if DEBUG_MODE:
+            st.write(f"DEBUG => In retrieve block => data={data}")
+        if isinstance(data, dict):
+            # ensure passages/metadata are not None
+            enhanced_data = {
+                'passages': data.get("passages", []),
+                'scores': [0.95, 0.87, 0.82],
+                'metadata': data.get("metadata", [])
+            }
+            if DEBUG_MODE:
+                st.write(f"DEBUG => enhanced retrieve data => {enhanced_data}")
+        else:
+            # data might be a tuple (passages, metadata)
+            pass_list = data[0] if data and len(data) > 0 else []
+            meta_list = data[1] if data and len(data) > 1 else []
+            enhanced_data = {
+                'passages': pass_list or [],
+                'scores': [0.95, 0.87, 0.82],
+                'metadata': meta_list or []
+            }
+            st.write(f"DEBUG => retrieve fallback => {enhanced_data}")
+
+    elif stage == 'generate':
+        # For "generate" stage
+        st.write(f"DEBUG => In generate block => data={data}")
+        # ensure 'answer' key is present
+        if isinstance(data, dict) and 'answer' not in data:
+            enhanced_data['answer'] = ''
+            if DEBUG_MODE:
+                st.write("DEBUG => 'answer' key was missing, set to ''")
+
+    # Store final "enhanced_data" in session state
+    st.session_state[f'{stage}_data'] = enhanced_data
+
+    # Debug print
+    if DEBUG_MODE:
+        st.write(f"DEBUG => st.session_state[{stage}_data] updated => {enhanced_data}")
+
+    # If a RAGState object is in session, update it
+    if 'rag_state' in st.session_state:
+        st.session_state.rag_state.set_stage(stage, enhanced_data)
+        if DEBUG_MODE:
+            st.write(f"DEBUG => RAGState updated => current_stage={st.session_state.rag_state.current_stage}")
 
 
 def set_openai_api_key(api_key: str):
@@ -944,7 +1016,8 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
     # after loop => flush leftover outside lines
     flush_outside_if_needed()
 
-    st.write(f"DEBUG: partial-block parse => total chunk objects => {len(final_chunks)}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: partial-block parse => total chunk objects => {len(final_chunks)}")
 
     # update pipeline
     chunk_data = {
@@ -1056,7 +1129,8 @@ def split_text_per_block_linewise(text: str) -> List[Dict[str, Any]]:
 
             if end_segment:
                 # This is "END OF X" => reversed block
-                st.write(f"DEBUG: Found reversed block for code={code_str}")
+                if DEBUG_MODE:
+                    st.write(f"DEBUG: Found reversed block for code={code_str}")
                 block_content = gather_block_reversed(code_str, i)
                 iso = handle_country_code_special_cases(code_str)
                 # chunk by paragraph
@@ -1066,7 +1140,8 @@ def split_text_per_block_linewise(text: str) -> List[Dict[str, Any]]:
                 continue
             else:
                 # This is a normal start => gather until 'END OF code'
-                st.write(f"DEBUG: Found normal block start => {code_str}")
+                if DEBUG_MODE:
+                    st.write(f"DEBUG: Found normal block start => {code_str}")
                 block_content = gather_block_normal(code_str, i)
                 iso = handle_country_code_special_cases(code_str)
                 subchunks = chunk_by_paragraph_or_size(block_content, iso_code=iso)
@@ -1078,7 +1153,8 @@ def split_text_per_block_linewise(text: str) -> List[Dict[str, Any]]:
             # (or store in outsideSegments if you like, but we won't warn).
             i += 1
 
-    st.write(f"DEBUG: partial-block parse => total chunk objects => {len(final_chunks)}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: partial-block parse => total chunk objects => {len(final_chunks)}")
 
     # Finally, update "chunk" stage so your React pipeline sees it
     chunk_data = {
@@ -1576,25 +1652,30 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
     """
     Enhanced query function that maintains existing functionality while adding country awareness
     """
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Entering query_collection() with query='{query}', collection_name='{collection_name}'")
+
     # Initialize country detector
     country_detector = CountryDetector()
     
-    # Get collection and check document count (preserve existing checks)
+    # Get collection and check document count
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
     doc_count = len(coll_info.get("ids", []))
     
-    # Preserve existing status message
-    st.write(f"Querying collection '{collection_name}' which has {doc_count} documents.")
-    
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Collection '{collection_name}' has doc_count={doc_count}")
+
     if doc_count == 0:
         st.warning("No documents found in collection. Please upload first.")
         return [], []
     
     # Try to detect country in query
     query_country_code = country_detector.detect_country_in_text(query)
-    
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Detected query_country_code={query_country_code}")
+
     if query_country_code:
         # If country detected, try country-specific search first
         st.write(f"Detected country code: {query_country_code}")
@@ -1605,39 +1686,57 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
         )
         retrieved_passages = results.get("documents", [[]])[0]
         retrieved_metadata = results.get("metadatas", [[]])[0]
-        
-        # If we don't get enough results, supplement with general search
+
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Found {len(retrieved_passages)} passages for code={query_country_code}")
+
+        # If we don't get enough results, do a fallback
         if len(retrieved_passages) < n_results:
-            st.write(f"Found only {len(retrieved_passages)} results for {query_country_code}. Supplementing with general search...")
+            st.write(f"Found only {len(retrieved_passages)} results for {query_country_code}. Supplementing general search...")
             remaining_results = n_results - len(retrieved_passages)
-            
-            # Additional query excluding already found passages
             additional_results = coll.query(
                 query_texts=[query],
                 where={"country_code": {"$ne": query_country_code}},  # not equal to the current country
                 n_results=remaining_results
             )
-            
-            retrieved_passages.extend(additional_results.get("documents", [[]])[0])
-            retrieved_metadata.extend(additional_results.get("metadatas", [[]])[0])
+            add_pass = additional_results.get("documents", [[]])[0]
+            add_meta = additional_results.get("metadatas", [[]])[0]
+            retrieved_passages.extend(add_pass)
+            retrieved_metadata.extend(add_meta)
+            if DEBUG_MODE:
+                st.write(f"DEBUG => After supplement => total passages={len(retrieved_passages)}")
+
     else:
-        # No country detected, use standard search (preserve existing behavior)
+        # No country detected, do a standard search
+        if DEBUG_MODE:
+            st.write("DEBUG => No country code detected, doing standard search")
         results = coll.query(
             query_texts=[query],
             n_results=n_results
         )
         retrieved_passages = results.get("documents", [[]])[0]
         retrieved_metadata = results.get("metadatas", [[]])[0]
-    
-    # Preserve existing stage update and status message
-    update_stage('retrieve', {"passages": retrieved_passages, "metadata": retrieved_metadata})
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Found {len(retrieved_passages)} passages (no country filter).")
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Will call update_stage('retrieve', ...) with passages={len(retrieved_passages)}, metadata={len(retrieved_metadata)}")
+
+    # Safely pass defaults to avoid None
+    update_stage('retrieve', {
+        "passages": retrieved_passages or [],
+        "metadata": retrieved_metadata or []
+    })
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => After update_stage('retrieve'), st.session_state['retrieve_data'] => {st.session_state.get('retrieve_data')}")
+
     st.write(f"Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
-    
-    # Add informative message about country detection
+
     if retrieved_passages:
         countries_found = set(meta.get('country_code', 'Unknown') for meta in retrieved_metadata)
         st.write(f"Results include information from: {', '.join(countries_found)}")
-    
+
     return retrieved_passages, retrieved_metadata
 
 
@@ -1646,6 +1745,9 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
 ##############################################################################
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
                              system_instruction: str = None):
+    if DEBUG_MODE:
+        st.write(f"DEBUG => generate_answer_with_gpt called with query='{query}', #passages={len(retrieved_passages)}")
+
     if system_instruction is None:
         system_instruction = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
     
@@ -1654,26 +1756,35 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
         st.stop()
     
     context_text = "\n\n".join(retrieved_passages)
-    
     final_prompt = (
         f"{system_instruction}\n\n"
         f"Context:\n{context_text}\n\n"
         f"User Query: {query}\nAnswer:"
     )
-    
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => final_prompt length={len(final_prompt)} chars")
+
     completion = new_client.chat.completions.create(
         model="chatgpt-4o-latest",
         messages=[{"role": "user", "content": final_prompt}],
         response_format={"type": "text"}
     )
-    answer = completion.choices[0].message.content
+    if completion and completion.choices:
+        answer = completion.choices[0].message.content
+    else:
+        if DEBUG_MODE:
+            st.write("DEBUG => No completion or empty choices; defaulting answer to ''")
+        answer = ""
+
+    st.write(f"DEBUG => Received answer of length={len(answer)}")
+
+    # Mark stage=generate
     update_stage('generate', {'answer': answer})
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Done generate => st.session_state['generate_data']={st.session_state.get('generate_data')}")
+
     return answer
-
-
-def summarize_context(passages: list[str]) -> str:
-    combined = "\n".join(passages)
-    return f"Summary of your documents:\n{combined}"
 
 
 ##############################################################################
@@ -1984,29 +2095,24 @@ def ensure_canonical_order(text: str) -> str:
     Otherwise, returns the original text.
     """
     lines = text.splitlines()
-    st.write(f"DEBUG: ensure_canonical_order -> total lines read: {len(lines)}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: ensure_canonical_order -> total lines read: {len(lines)}")
     for raw_line in lines:
         stripped = raw_line.strip()
         if stripped and not re.fullmatch(r"[-]+", stripped):
-            st.write(f"DEBUG: First non-dash non-empty line => {repr(stripped)}")
+            if DEBUG_MODE:
+                st.write(f"DEBUG: First non-dash non-empty line => {repr(stripped)}")
             if re.search(r"END OF", stripped, flags=re.IGNORECASE):
-                st.write("DEBUG: Found 'END OF' => reversing text.")
+                if DEBUG_MODE:
+                    st.write("DEBUG: Found 'END OF' => reversing text.")
                 return "\n".join(lines[::-1])
             else:
-                st.write("DEBUG: 'END OF' not found => no reversal triggered.")
+                if DEBUG_MODE:
+                    st.write("DEBUG: 'END OF' not found => no reversal triggered.")
             break
-    st.write("DEBUG: returning original text => no changes.")
+    if DEBUG_MODE:
+        st.write("DEBUG: returning original text => no changes.")
     return text
-
-def update_stage(stage: str, data=None):
-    """
-    Stores the provided data for the given pipeline stage in session state.
-    This data is later read by the React pipeline component.
-    """
-    if data is None:
-        data = {}
-    st.session_state[f"{stage}_data"] = data
-    st.session_state["current_stage"] = stage
 
 def chunk_text(text: str) -> List[str]:
     """
@@ -2031,17 +2137,20 @@ def chunk_text(text: str) -> List[str]:
     pattern = r"(={5,}\s*(?:CH|US|END OF CH|END OF US)\s*={5,})"
     parts = re.split(pattern, cleaned_text, flags=re.IGNORECASE)
     parts = [p.strip() for p in parts if p.strip()]
-    st.write("DEBUG: raw splitted parts =>", parts)
+    if DEBUG_MODE:
+        st.write("DEBUG: raw splitted parts =>", parts)
 
     # If exactly 3 => single chunk if first/last are full markers
     if len(parts) == 3:
         if re.fullmatch(pattern, parts[0], flags=re.IGNORECASE) and re.fullmatch(pattern, parts[2], flags=re.IGNORECASE):
-            st.write("DEBUG: recognized a single block => using inner content as chunk.")
+            if DEBUG_MODE:
+                st.write("DEBUG: recognized a single block => using inner content as chunk.")
             parts = [parts[1]]
 
     # If fewer than 2 => fallback to entire cleaned text
     if len(parts) < 2:
-        st.write("DEBUG: chunk_text => 0 or 1 chunk => fallback entire text.")
+        if DEBUG_MODE:
+            st.write("DEBUG: chunk_text => 0 or 1 chunk => fallback entire text.")
         parts = [cleaned_text]
 
     # Overwrite "upload" stage so pipeline UI sees the canonical text
@@ -2446,7 +2555,7 @@ def main():
         st.subheader("Step 5B: Retrieve Matching Chunks (Optional)")
         if st.button("Run Step 5B: Retrieve Matching Chunks"):
             if st.session_state.query_embedding:
-                passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection")
+                passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection", n_results=5)
                 st.session_state.retrieved_passages = passages
                 st.session_state.retrieved_metadata = metadata
                 st.success("Relevant chunks retrieved based on your query in Step 5A!")
@@ -2460,7 +2569,7 @@ def main():
         if st.button("Run Step 6: Get Answer"):
             current_question = st.session_state.final_question_input
             if current_question.strip():
-                passages, metadata = query_collection(current_question, "rag_collection")
+                passages, metadata = query_collection(current_question, "rag_collection", n_results=50)
                 if passages:
                     answer = generate_answer_with_gpt(current_question, passages, metadata)
                     st.session_state.final_answer = answer
