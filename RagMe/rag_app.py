@@ -141,6 +141,7 @@ from typing import List, Dict, Set, Optional, Tuple, Union, Any
 import unicodedata
 import requests
 from openai import OpenAI
+import openai
 import shutil
 import hashlib
 import os
@@ -218,365 +219,63 @@ from typing import Optional, Dict, Set
 import pycountry
 import streamlit as st  # optional if you want to log warnings
 
-class CountryDetector:
-    """
-    Detects country references in user text by:
-      1) Checking for ISO codes (alpha2, alpha3) in uppercase.
-      2) Checking for official/common English names from pycountry.
-      3) Checking for a built-in German translation (if available) via country.translations.
-      4) Incorporating a large synonyms map (manually curated for English/German/local forms).
+import openai
 
-    Returns an alpha-2 code (e.g., 'CH' for Switzerland) if found.
+class LLMCountryDetector:
+    """
+    Minimal class that uses an OpenAI ChatCompletion call to detect countries
+    in multi-lingual text. It returns ISO alpha-2 codes as a list, e.g. ["CH","US"].
     """
 
-    def __init__(self):
-        self.country_mapping = self._build_country_mapping()
+    SYSTEM_PROMPT = """
+        You are a specialized assistant for detecting countries in text.
+        Your goal: given a snippet of text in ANY language, identify
+        all distinct countries mentioned in it, and convert them
+        to their ISO alpha-2 codes (uppercase).
 
-    def _build_country_mapping(self) -> Dict[str, Dict[str, Set[str]]]:
+        Output must be strictly valid JSON array, e.g.:
+         ["DE","CH"]
+        If no countries are found, output [].
+
+        Important:
+        - If multiple countries appear, list them all once.
+        - If there's an ambiguous mention (like 'Georgia'), ignore it or guess.
+        - Use uppercase alpha-2 codes (like 'DE', 'CH', 'US', 'GB').
+        - No extra text in your output, only valid JSON.
+    """.strip()
+
+    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
+        openai.api_key = api_key
+        self.model = model
+
+    def detect_countries_in_text(self, text: str):
         """
-        Gathers known synonyms & codes for each country:
-          - alpha_2 & alpha_3 codes from pycountry.
-          - Official/common name from pycountry.
-          - A German translation from country.translations (if available).
-          - A large manually curated synonyms map for extra coverage.
+        Return a list of uppercase ISO codes. E.g. ["CH","US"].
+        If none found, return [].
         """
-        mapping = {}
-        synonyms_map = self._synonyms_map()
+        if not text.strip():
+            return []
+        try:
+            response = openai.ChatCompletion.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.0
+            )
+            raw_content = response.choices[0].message.content.strip()
+            codes = json.loads(raw_content)
+            # Filter out anything that isn't 2 uppercase letters
+            valid = [c for c in codes if len(c) == 2 and c.isupper()]
+            return list(set(valid))  # unique
+        except Exception as e:
+            print(f"[LLMCountryDetector] Error: {e}")
+            return []
 
-        for country in pycountry.countries:
-            alpha2 = country.alpha_2
-            alpha3 = country.alpha_3
-
-            iso_codes = {alpha2, alpha3}
-            all_names = set()
-
-            # 1) Official English name
-            all_names.add(country.name.lower())
-
-            # 2) If available, official_name and common_name
-            if hasattr(country, 'official_name'):
-                off = getattr(country, 'official_name')
-                if off and off.lower() not in all_names:
-                    all_names.add(off.lower())
-            if hasattr(country, 'common_name'):
-                common = getattr(country, 'common_name')
-                if common and common.lower() not in all_names:
-                    all_names.add(common.lower())
-
-            # 3) Attempt to add a German translation if available
-            if hasattr(country, 'translations'):
-                de_name = country.translations.get('de')
-                if de_name and de_name.lower() not in all_names:
-                    all_names.add(de_name.lower())
-
-            # 4) Add manually curated synonyms
-            extras = synonyms_map.get(alpha2.upper(), set())
-            all_names.update(extras)
-
-            mapping[alpha2] = {
-                "iso": iso_codes,
-                "names": all_names
-            }
-            mapping[alpha3] = mapping[alpha2]
-
-        return mapping
-
-    def _synonyms_map(self) -> Dict[str, Set[str]]:
-        """
-        A large dictionary mapping ISO alpha-2 codes to a set of synonyms.
-        This includes well-known English, German, and minimal local forms.
-        (Extend this as needed.)
-        """
-        return {
-            # -----------------
-            # Europe
-            # -----------------
-            "AD": {"andorra"},
-            "AL": {"albania", "albanien"},
-            "AM": {"armenia", "armenien"},
-            "AT": {"austria", "osterreich", "österreich"},
-            "AZ": {"azerbaijan", "aserbaidschan"},
-            "BA": {"bosnia", "bosnia and herzegovina", "bosnien", "herzegovina"},
-            "BE": {"belgium", "belgien", "belgique"},
-            "BG": {"bulgaria", "bulgarien"},
-            "BY": {"belarus", "weißrussland", "weissrussland"},
-            "CH": {"switzerland", "schweiz", "svizzera", "suisse", "swiss", "helvetia"},
-            "CY": {"cyprus", "zypern"},
-            "CZ": {"czech republic", "czechia", "tschechien", "tschchien"},
-            "DE": {"germany", "deutschland"},
-            "DK": {"denmark", "danmark"},
-            "EE": {"estonia", "estland"},
-            "ES": {"spain", "spanien", "españa"},
-            "FI": {"finland", "finnland"},
-            "FO": {"faroe islands", "färöer", "faroe"},
-            "FR": {"france", "frankreich"},
-            "GB": {"uk", "gb", "united kingdom", "england", "britain", "scotland", "wales", "großbritannien"},
-            "IE": {"ireland", "irland"},
-            "IS": {"iceland", "island"},
-            "IT": {"italy", "italien", "italia"},
-            "LI": {"liechtenstein"},
-            "LT": {"lithuania", "litauen"},
-            "LU": {"luxembourg", "luxemburg"},
-            "LV": {"latvia", "lettland"},
-            "MC": {"monaco"},
-            "MD": {"moldova", "moldawien", "moldau"},
-            "ME": {"montenegro", "crna gora"},
-            "MK": {"macedonia", "north macedonia", "mazedonien"},
-            "MT": {"malta"},
-            "NL": {"netherlands", "holland", "niederlande", "holländisch"},
-            "NO": {"norway", "norwegen"},
-            "PL": {"poland", "polen"},
-            "PT": {"portugal"},
-            "RO": {"romania", "rumänien", "rumanien"},
-            "RS": {"serbia", "serbien"},
-            "RU": {"russia", "russland", "rossija"},
-            "SE": {"sweden", "schweden"},
-            "SI": {"slovenia", "slowenien"},
-            "SK": {"slovakia", "slowakei"},
-            "TR": {"turkey", "türkei"},
-            "UA": {"ukraine", "ukraina"},
-            "VA": {"vatican", "vatikan"},
-            "XK": {"kosovo"},
-            # -----------------
-            # Asia
-            # -----------------
-            "AE": {"uae", "united arab emirates", "vereinigte arabische emirate"},
-            "AF": {"afghanistan", "afganistan"},
-            "BD": {"bangladesh", "bangladesch"},
-            "BH": {"bahrain", "bahrein"},
-            "BN": {"brunei"},
-            "BT": {"bhutan", "butan"},
-            "CN": {"china", "volksrepublik china"},
-            "HK": {"hong kong"},
-            "ID": {"indonesia", "indonesien"},
-            "IN": {"india", "indien"},
-            "IQ": {"iraq", "irak"},
-            "IR": {"iran", "persia"},
-            "IL": {"israel", "israël"},
-            "JO": {"jordan", "jordanien"},
-            "JP": {"japan"},
-            "KG": {"kazakhstan", "kasachstan"},
-            "KH": {"cambodia", "kambodscha", "kampuchea"},
-            "KP": {"north korea", "nordkorea"},
-            "KR": {"south korea", "südkorea"},
-            "KW": {"kuwait", "kuweit"},
-            "LA": {"laos", "lao"},
-            "LB": {"lebanon", "libanon"},
-            "LK": {"sri lanka", "ceylon"},
-            "MM": {"myanmar", "burma"},
-            "MN": {"mongolia", "mongolei"},
-            "MY": {"malaysia", "malaysien"},
-            "NP": {"nepal"},
-            "OM": {"oman"},
-            "PH": {"philippines", "philippinen"},
-            "PK": {"pakistan", "pakstan"},
-            "PS": {"palestine", "palästina"},
-            "QA": {"qatar", "katar"},
-            "SA": {"saudi arabia", "saudi-arabien"},
-            "SG": {"singapore", "singapur"},
-            "SY": {"syria", "syrien"},
-            "TH": {"thailand", "thailändisch"},
-            "TJ": {"tajikistan", "tadschikistan"},
-            "TM": {"turkmenistan", "turkmenien"},
-            "TW": {"taiwan", "roc"},
-            "UZ": {"uzbekistan", "usbekistan"},
-            "VN": {"vietnam", "viet nam"},
-            "YE": {"yemen", "jemen"},
-            # -----------------
-            # Africa
-            # -----------------
-            "AO": {"angola"},
-            "BF": {"burkina faso"},
-            "BI": {"burundi"},
-            "BJ": {"benin"},
-            "BW": {"botswana"},
-            "CD": {"dr congo", "democratic republic congo", "kongo-kinshasa", "zaire"},
-            "CF": {"central african republic", "zentralafrikanische republik"},
-            "CG": {"congo-brazzaville", "republic of congo"},
-            "CI": {"cote d'ivoire", "ivory coast", "côte d’ivoire"},
-            "CM": {"cameroon", "kamerun"},
-            "CV": {"cape verde", "kap verde", "cabo verde"},
-            "DJ": {"djibouti", "dschibuti"},
-            "DZ": {"algeria", "algerien"},
-            "EG": {"egypt", "ägypten"},
-            "ER": {"eritrea"},
-            "ET": {"ethiopia", "äthiopien"},
-            "GA": {"gabon"},
-            "GH": {"ghana"},
-            "GM": {"gambia"},
-            "GN": {"guinea", "guinea-conakry"},
-            "GQ": {"equatorial guinea", "äquatorialguinea"},
-            "GW": {"guinea-bissau"},
-            "KE": {"kenya", "kenia"},
-            "KM": {"comoros", "komoren"},
-            "LR": {"liberia"},
-            "LS": {"lesotho"},
-            "LY": {"libya", "libyen"},
-            "MA": {"morocco", "marokko"},
-            "MG": {"madagascar", "madagaskar"},
-            "ML": {"mali"},
-            "MR": {"mauritania", "mauretanien"},
-            "MU": {"mauritius"},
-            "MW": {"malawi"},
-            "MZ": {"mozambique", "mosambik"},
-            "NA": {"namibia"},
-            "NE": {"niger"},
-            "NG": {"nigeria", "nijeria"},
-            "RE": {"réunion", "reunion"},
-            "RW": {"rwanda"},
-            "SC": {"seychelles"},
-            "SD": {"sudan"},
-            "SL": {"sierra leone"},
-            "SN": {"senegal"},
-            "SO": {"somalia", "somalien"},
-            "SS": {"south sudan", "südsudan"},
-            "ST": {"sao tome and principe", "são tomé und príncipe"},
-            "SZ": {"eswatini", "swaziland"},
-            "TD": {"chad", "tsjad"},
-            "TG": {"togo"},
-            "TN": {"tunisia", "tunesien"},
-            "TZ": {"tanzania", "tansania"},
-            "UG": {"uganda"},
-            "YT": {"mayotte"},
-            "ZA": {"south africa", "südafrika"},
-            "ZM": {"zambia", "sambia"},
-            "ZW": {"zimbabwe", "simbabwe"},
-            # -----------------
-            # Americas
-            # -----------------
-            "AG": {"antigua and barbuda"},
-            "AI": {"anguilla"},
-            "AN": {"netherlands antilles"},  # obsolete code
-            "AR": {"argentina", "argentinien"},
-            "AW": {"aruba"},
-            "BB": {"barbados"},
-            "BO": {"bolivia", "bolivien"},
-            "BR": {"brazil", "brasilien"},
-            "BS": {"bahamas"},
-            "BZ": {"belize"},
-            "CA": {"canada", "kanada"},
-            "CL": {"chile"},
-            "CO": {"colombia", "kolumbien"},
-            "CR": {"costa rica", "costarica"},
-            "CU": {"cuba", "kuba"},
-            "DM": {"dominica"},
-            "DO": {"dominican republic", "dominikanische republik"},
-            "EC": {"ecuador"},
-            "GD": {"grenada"},
-            "GF": {"french guiana", "guyane"},
-            "GL": {"greenland", "grönland"},
-            "GT": {"guatemala"},
-            "GY": {"guyana"},
-            "HN": {"honduras"},
-            "HT": {"haiti"},
-            "JM": {"jamaica", "jamaika"},
-            "KN": {"saint kitts and nevis", "st kitts und nevis"},
-            "LC": {"saint lucia"},
-            "MQ": {"martinique"},
-            "MX": {"mexico", "mexiko"},
-            "NI": {"nicaragua"},
-            "PA": {"panama", "panamá"},
-            "PE": {"peru", "perú"},
-            "PF": {"french polynesia", "polynésie française"},
-            "PR": {"puerto rico", "puertorico"},
-            "PY": {"paraguay"},
-            "SR": {"suriname", "surinam"},
-            "SV": {"el salvador", "elsalvador"},
-            "TC": {"turks and caicos islands"},
-            "TT": {"trinidad and tobago", "trinidad tobago"},
-            "UY": {"uruguay"},
-            "VC": {"saint vincent and the grenadines"},
-            "VE": {"venezuela"},
-            # -----------------
-            # Oceania
-            # -----------------
-            "AS": {"american samoa"},
-            "AU": {"australia", "australien"},
-            "CK": {"cook islands"},
-            "FJ": {"fiji", "fidji"},
-            "FM": {"micronesia", "föderierte staaten von mikronesien", "mikronesien"},
-            "GU": {"guam"},
-            "KI": {"kiribati"},
-            "MH": {"marshall islands"},
-            "MP": {"northern mariana islands"},
-            "NC": {"new caledonia", "nouvelle-calédonie"},
-            "NR": {"nauru"},
-            "NU": {"niue"},
-            "NZ": {"new zealand", "neuseeland"},
-            "PG": {"papua new guinea", "papua-neuguinea"},
-            "PN": {"pitcairn islands"},
-            "PW": {"palau"},
-            "SB": {"solomon islands", "salomonen"},
-            "TO": {"tonga"},
-            "TV": {"tuvalu"},
-            "VU": {"vanuatu"},
-            "WF": {"wallis and futuna"},
-            "WS": {"samoa"}
-        }
-
-    def get_iso_alpha2(self, country_identifier: str) -> Optional[str]:
-        """
-        Convert any country identifier (name or code) to ISO alpha-2 code
-        by matching it in self.country_mapping.
-        """
-        country_identifier = country_identifier.strip().lower()
-        upper_id = country_identifier.upper()
-        if upper_id in self.country_mapping:
-            for code in self.country_mapping[upper_id]['iso']:
-                if len(code) == 2:
-                    return code
-
-        for alpha2, data in self.country_mapping.items():
-            if len(alpha2) == 2:
-                for known_name in data['names']:
-                    if country_identifier == known_name:
-                        return alpha2
-        return None
-
-    def detect_country_in_text(self, text: str) -> Optional[str]:
-        """
-        Return the first alpha-2 code detected in 'text':
-          - Check for explicit 2/3 letter ISO codes.
-          - Otherwise, search for any known synonym.
-        """
-        text_upper = text.upper()
-        text_lower = text.lower()
-
-        COMMON_STOPWORDS = {
-            # English stopwords
-            "ARE", "AND", "FOR", "THE", "WAS", "WERE", "HAS", "HAVE", "IS", "IN",
-            "OF", "TO", "A", "AN", "AT", "BY", "FROM", "IT", "ON", "AS",
-            # German stopwords
-            "UND", "DER", "DIE", "DAS", "IST", "IN", "DES", "DEN", "EIN", "EINE",
-            "MIT", "AUF", "FÜR", "NICHT", "WAR", "SIND", "HAT", "HABEN", "ICH", "DU", "AB", "ZU"
-        }
-
-        for match in re.finditer(r'\b([A-Z]{2,3})\b', text.upper()):
-            token = match.group(1)
-            # Skip tokens that are common stopwords in English or German
-            if token in COMMON_STOPWORDS:
-                continue
-            iso_code = self.get_iso_alpha2(token)
-            if iso_code:
-                return iso_code
-        for alpha2, data in self.country_mapping.items():
-            if len(alpha2) == 2:
-                for known_name in data['names']:
-                    if known_name in text_lower:
-                        return alpha2
-        return None
-
-if __name__ == '__main__':
-    detector = CountryDetector()
-    test_queries = [
-        "I am planning a trip to Deutschland next summer.",
-        "She moved to Switzerland for work.",
-        "Traveling to the United Kingdom was fun.",
-        "We visited Tschechien recently."  # German variant for Czech Republic
-    ]
-    for query in test_queries:
-        code = detector.detect_country_in_text(query)
-        print(f"Query: '{query}' => Detected country code: {code}")
+    def detect_first_country_in_text(self, text: str):
+        all_codes = self.detect_countries_in_text(text)
+        return all_codes[0] if all_codes else None
 
 ##############################################################################
 # 2) SESSION STATE INIT
@@ -1654,15 +1353,16 @@ def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[
 
 def query_collection(query: str, collection_name: str, n_results: int = 3):
     """
-    Enhanced query function that maintains existing functionality while adding country awareness
+    Enhanced query function that uses an LLM-based country detector
+    and supports multiple country codes in a single query.
     """
     if DEBUG_MODE:
         st.write(f"DEBUG => Entering query_collection() with query='{query}', collection_name='{collection_name}'")
 
-    # Initialize country detector
-    country_detector = CountryDetector()
+    # Initialize the LLM-based detector
+    llm_detector = LLMCountryDetector(api_key=st.session_state["api_key"])
     
-    # Get collection and check document count
+    # Create/load collection and check doc count
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
@@ -1675,32 +1375,38 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
         st.warning("No documents found in collection. Please upload first.")
         return [], []
     
-    # Try to detect country in query
-    query_country_code = country_detector.detect_country_in_text(query)
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Detected query_country_code={query_country_code}")
-
-    if query_country_code:
-        # If country detected, try country-specific search first
-        st.write(f"Detected country code: {query_country_code}")
+    # 1) Detect all countries in the user's query (multi-language)
+    iso_codes = llm_detector.detect_countries_in_text(query)  # e.g. ["CH", "US"]
+    
+    # For debugging
+    if iso_codes:
+        st.write(f"Detected country code(s): {iso_codes}")
+    else:
+        if DEBUG_MODE:
+            st.write("DEBUG => No country codes detected at all.")
+    
+    # 2) If we found one or more ISO codes, do an 'IN' filter
+    if iso_codes:
         results = coll.query(
             query_texts=[query],
-            where={"country_code": query_country_code},
+            where={"country_code": {"$in": iso_codes}},
             n_results=n_results
         )
         retrieved_passages = results.get("documents", [[]])[0]
         retrieved_metadata = results.get("metadatas", [[]])[0]
 
         if DEBUG_MODE:
-            st.write(f"DEBUG => Found {len(retrieved_passages)} passages for code={query_country_code}")
+            st.write(f"DEBUG => Found {len(retrieved_passages)} passages for codes={iso_codes}")
 
-        # If we don't get enough results, do a fallback
+        # If we don't get enough results, do a fallback search on all the other countries
         if len(retrieved_passages) < n_results:
-            st.write(f"Found only {len(retrieved_passages)} results for {query_country_code}. Supplementing general search...")
+            st.write(f"Found only {len(retrieved_passages)} results for {iso_codes}. "
+                     "Supplementing general search outside these codes...")
             remaining_results = n_results - len(retrieved_passages)
+            # Fallback with "country_code" not in iso_codes
             additional_results = coll.query(
                 query_texts=[query],
-                where={"country_code": {"$ne": query_country_code}},  # not equal to the current country
+                where={"country_code": {"$nin": iso_codes}},
                 n_results=remaining_results
             )
             add_pass = additional_results.get("documents", [[]])[0]
@@ -1711,9 +1417,9 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
                 st.write(f"DEBUG => After supplement => total passages={len(retrieved_passages)}")
 
     else:
-        # No country detected, do a standard search
+        # 3) If no countries are detected, do a normal search with no filter
         if DEBUG_MODE:
-            st.write("DEBUG => No country code detected, doing standard search")
+            st.write("DEBUG => Doing standard search with no country filter.")
         results = coll.query(
             query_texts=[query],
             n_results=n_results
@@ -1723,17 +1429,19 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
         if DEBUG_MODE:
             st.write(f"DEBUG => Found {len(retrieved_passages)} passages (no country filter).")
 
+    # 4) Update pipeline stage
     if DEBUG_MODE:
-        st.write(f"DEBUG => Will call update_stage('retrieve', ...) with passages={len(retrieved_passages)}, metadata={len(retrieved_metadata)}")
+        st.write(f"DEBUG => Will call update_stage('retrieve', ...) with passages={len(retrieved_passages)}, "
+                 f"metadata={len(retrieved_metadata)}")
 
-    # Safely pass defaults to avoid None
     update_stage('retrieve', {
         "passages": retrieved_passages or [],
         "metadata": retrieved_metadata or []
     })
 
     if DEBUG_MODE:
-        st.write(f"DEBUG => After update_stage('retrieve'), st.session_state['retrieve_data'] => {st.session_state.get('retrieve_data')}")
+        st.write(f"DEBUG => After update_stage('retrieve'), st.session_state['retrieve_data'] => "
+                 f"{st.session_state.get('retrieve_data')}")
         st.write(f"DEBUG => Retrieved {len(retrieved_passages)} passages from collection '{collection_name}'.")
 
     if retrieved_passages:
@@ -1748,8 +1456,14 @@ def query_collection(query: str, collection_name: str, n_results: int = 3):
 ##############################################################################
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
                              system_instruction: str = None):
+    """
+    Generates a final GPT answer from the user's query + relevant passages.
+    Here, we label each chunk with 'Country=XX' so the LLM can distinguish them
+    if multiple countries appear in the context.
+    """
     if DEBUG_MODE:
-        st.write(f"DEBUG => generate_answer_with_gpt called with query='{query}', #passages={len(retrieved_passages)}")
+        st.write(f"DEBUG => generate_answer_with_gpt called with query='{query}', "
+                 f"#passages={len(retrieved_passages)}")
 
     if system_instruction is None:
         system_instruction = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
@@ -1757,17 +1471,29 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
     if new_client is None:
         st.error("OpenAI client not initialized. Provide an API key in the sidebar.")
         st.stop()
-    
-    context_text = "\n\n".join(retrieved_passages)
+
+    # Build a labeled context so GPT knows which chunk belongs to which country
+    labeled_chunks = []
+    for passage, meta in zip(retrieved_passages, retrieved_metadata):
+        ccode = meta.get("country_code", "UNKNOWN")
+        # Label each chunk with its country code
+        labeled_text = f"[Country={ccode}]\n{passage}"
+        labeled_chunks.append(labeled_text)
+
+    # Join them with spacing
+    labeled_context = "\n\n".join(labeled_chunks)
+
+    # Construct the final prompt
     final_prompt = (
         f"{system_instruction}\n\n"
-        f"Context:\n{context_text}\n\n"
+        f"Context:\n{labeled_context}\n\n"
         f"User Query: {query}\nAnswer:"
     )
 
     if DEBUG_MODE:
         st.write(f"DEBUG => final_prompt length={len(final_prompt)} chars")
 
+    # Perform the chat completion
     completion = new_client.chat.completions.create(
         model="chatgpt-4o-latest",
         messages=[{"role": "user", "content": final_prompt}],
@@ -1782,10 +1508,11 @@ def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieve
 
     st.write(f"DEBUG => Received answer of length={len(answer)}")
 
-    # Mark stage=generate
+    # Mark stage=generate in the pipeline
     update_stage('generate', {'answer': answer})
     if DEBUG_MODE:
-        st.write(f"DEBUG => Done generate => st.session_state['generate_data']={st.session_state.get('generate_data')}")
+        st.write(f"DEBUG => Done generate => st.session_state['generate_data']="
+                 f"{st.session_state.get('generate_data')}")
 
     return answer
 
