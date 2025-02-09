@@ -40,7 +40,7 @@ BASE_DEFAULT_PROMPT = (
     "         on how the query might be related.\n\n"
     "    6. Keep the doc-based sections strictly doc-based (no external info). Maintain **bold** for crucial references, "
     "       *italics* for nuance, and a professional, academically rigorous tone except in \"The fun part :-)\".\n\n"
-    "    7. IMPORTANT: always answer in the language of the user's initial query unless the user requests otherwise.\n\n"
+    "    7. IMPORTANT: always answer in the language of the user's initial query unless the user requests otherwise. Translate the <STRUCTURE> and all other elements of your full output to the user's query language.\n\n"
     "    8. IMPORTANT: Do **not** produce XML tags in your final output. Present your answer in normal prose with "
     "       headings in large text as described.\n"
     "  </INSTRUCTIONS>\n\n"
@@ -491,7 +491,7 @@ class CountryDetector:
             "AU": {"australia", "australien"},
             "CK": {"cook islands"},
             "FJ": {"fiji", "fidji"},
-            "FM": {"micronesia", "föderierte staaten von mikronesien"},
+            "FM": {"micronesia", "föderierte staaten von mikronesien", "mikronesien"},
             "GU": {"guam"},
             "KI": {"kiribati"},
             "MH": {"marshall islands"},
