@@ -40,7 +40,7 @@ BASE_DEFAULT_PROMPT = (
     "         on how the query might be related.\n\n"
     "    6. Keep the doc-based sections strictly doc-based (no external info). Maintain **bold** for crucial references, "
     "       *italics* for nuance, and a professional, academically rigorous tone except in \"The fun part :-)\".\n\n"
-    "    7. Answer in English unless otherwise specified.\n\n"
+    "    7. IMPORTANT: always answer in the language of the user's initial query unless the user requests otherwise.\n\n"
     "    8. IMPORTANT: Do **not** produce XML tags in your final output. Present your answer in normal prose with "
     "       headings in large text as described.\n"
     "  </INSTRUCTIONS>\n\n"
