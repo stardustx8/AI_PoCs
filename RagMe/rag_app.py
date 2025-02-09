@@ -203,93 +203,364 @@ class OpenAIEmbeddingFunction:
         response = self.client.embeddings.create(input=texts, model="text-embedding-3-large")
         return [item.embedding for item in response.data]
 
+import re
+from typing import Optional, Dict, Set
+import pycountry
+
+import streamlit as st  # optional if you want to log warnings
+
+import re
+from typing import Optional, Dict, Set
+import pycountry
+import streamlit as st  # optional if you want to log warnings
+
 class CountryDetector:
     """
-    Handles country detection using ISO codes and common names/variations
+    Detects country references in user text by:
+      1) Checking for ISO codes (alpha2, alpha3) in uppercase.
+      2) Checking for official/common English names from pycountry.
+      3) Checking for a built-in German translation (if available) via country.translations.
+      4) Incorporating a large synonyms map (manually curated for English/German/local forms).
+
+    Returns an alpha-2 code (e.g., 'CH' for Switzerland) if found.
     """
+
     def __init__(self):
         self.country_mapping = self._build_country_mapping()
-        
+
     def _build_country_mapping(self) -> Dict[str, Dict[str, Set[str]]]:
         """
-        Builds a comprehensive mapping of countries including:
-        - ISO codes (alpha_2, alpha_3)
-        - Common names and variations
-        - Official names
+        Gathers known synonyms & codes for each country:
+          - alpha_2 & alpha_3 codes from pycountry.
+          - Official/common name from pycountry.
+          - A German translation from country.translations (if available).
+          - A large manually curated synonyms map for extra coverage.
         """
         mapping = {}
-        
+        synonyms_map = self._synonyms_map()
+
         for country in pycountry.countries:
-            country_data = {
-                'iso': {country.alpha_2, country.alpha_3},
-                'names': {country.name.lower()}
-            }
-            
-            # Add common names and variations
-            if hasattr(country, 'common_name'):
-                country_data['names'].add(country.common_name.lower())
+            alpha2 = country.alpha_2
+            alpha3 = country.alpha_3
+
+            iso_codes = {alpha2, alpha3}
+            all_names = set()
+
+            # 1) Official English name
+            all_names.add(country.name.lower())
+
+            # 2) If available, official_name and common_name
             if hasattr(country, 'official_name'):
-                country_data['names'].add(country.official_name.lower())
-                
-            # Add special cases and common variations
-            special_cases = {
-                'US': {'usa', 'united states', 'america', 'american'},
-                'GB': {'uk', 'united kingdom', 'britain', 'british', 'england'},
-                'CH': {'switzerland', 'swiss'},
-                'DE': {'germany', 'german'},
-                # Add more special cases as needed
+                off = getattr(country, 'official_name')
+                if off and off.lower() not in all_names:
+                    all_names.add(off.lower())
+            if hasattr(country, 'common_name'):
+                common = getattr(country, 'common_name')
+                if common and common.lower() not in all_names:
+                    all_names.add(common.lower())
+
+            # 3) Attempt to add a German translation if available
+            if hasattr(country, 'translations'):
+                de_name = country.translations.get('de')
+                if de_name and de_name.lower() not in all_names:
+                    all_names.add(de_name.lower())
+
+            # 4) Add manually curated synonyms
+            extras = synonyms_map.get(alpha2.upper(), set())
+            all_names.update(extras)
+
+            mapping[alpha2] = {
+                "iso": iso_codes,
+                "names": all_names
             }
-            
-            if country.alpha_2 in special_cases:
-                country_data['names'].update(special_cases[country.alpha_2])
-            
-            # Store both by alpha_2 and alpha_3 codes
-            mapping[country.alpha_2] = country_data
-            mapping[country.alpha_3] = country_data
-        
+            mapping[alpha3] = mapping[alpha2]
+
         return mapping
-    
+
+    def _synonyms_map(self) -> Dict[str, Set[str]]:
+        """
+        A large dictionary mapping ISO alpha-2 codes to a set of synonyms.
+        This includes well-known English, German, and minimal local forms.
+        (Extend this as needed.)
+        """
+        return {
+            # -----------------
+            # Europe
+            # -----------------
+            "AD": {"andorra"},
+            "AL": {"albania", "albanien"},
+            "AM": {"armenia", "armenien"},
+            "AT": {"austria", "osterreich", "österreich"},
+            "AZ": {"azerbaijan", "aserbaidschan"},
+            "BA": {"bosnia", "bosnia and herzegovina", "bosnien", "herzegovina"},
+            "BE": {"belgium", "belgien", "belgique"},
+            "BG": {"bulgaria", "bulgarien"},
+            "BY": {"belarus", "weißrussland", "weissrussland"},
+            "CH": {"switzerland", "schweiz", "svizzera", "suisse", "swiss", "helvetia"},
+            "CY": {"cyprus", "zypern"},
+            "CZ": {"czech republic", "czechia", "tschechien", "tschchien"},
+            "DE": {"germany", "deutschland"},
+            "DK": {"denmark", "danmark"},
+            "EE": {"estonia", "estland"},
+            "ES": {"spain", "spanien", "españa"},
+            "FI": {"finland", "finnland"},
+            "FO": {"faroe islands", "färöer", "faroe"},
+            "FR": {"france", "frankreich"},
+            "GB": {"uk", "gb", "united kingdom", "england", "britain", "scotland", "wales", "großbritannien"},
+            "IE": {"ireland", "irland"},
+            "IS": {"iceland", "island"},
+            "IT": {"italy", "italien", "italia"},
+            "LI": {"liechtenstein"},
+            "LT": {"lithuania", "litauen"},
+            "LU": {"luxembourg", "luxemburg"},
+            "LV": {"latvia", "lettland"},
+            "MC": {"monaco"},
+            "MD": {"moldova", "moldawien", "moldau"},
+            "ME": {"montenegro", "crna gora"},
+            "MK": {"macedonia", "north macedonia", "mazedonien"},
+            "MT": {"malta"},
+            "NL": {"netherlands", "holland", "niederlande", "holländisch"},
+            "NO": {"norway", "norwegen"},
+            "PL": {"poland", "polen"},
+            "PT": {"portugal"},
+            "RO": {"romania", "rumänien", "rumanien"},
+            "RS": {"serbia", "serbien"},
+            "RU": {"russia", "russland", "rossija"},
+            "SE": {"sweden", "schweden"},
+            "SI": {"slovenia", "slowenien"},
+            "SK": {"slovakia", "slowakei"},
+            "TR": {"turkey", "türkei"},
+            "UA": {"ukraine", "ukraina"},
+            "VA": {"vatican", "vatikan"},
+            "XK": {"kosovo"},
+            # -----------------
+            # Asia
+            # -----------------
+            "AE": {"uae", "united arab emirates", "vereinigte arabische emirate"},
+            "AF": {"afghanistan", "afganistan"},
+            "BD": {"bangladesh", "bangladesch"},
+            "BH": {"bahrain", "bahrein"},
+            "BN": {"brunei"},
+            "BT": {"bhutan", "butan"},
+            "CN": {"china", "volksrepublik china"},
+            "HK": {"hong kong"},
+            "ID": {"indonesia", "indonesien"},
+            "IN": {"india", "indien"},
+            "IQ": {"iraq", "irak"},
+            "IR": {"iran", "persia"},
+            "IL": {"israel", "israël"},
+            "JO": {"jordan", "jordanien"},
+            "JP": {"japan"},
+            "KG": {"kazakhstan", "kasachstan"},
+            "KH": {"cambodia", "kambodscha", "kampuchea"},
+            "KP": {"north korea", "nordkorea"},
+            "KR": {"south korea", "südkorea"},
+            "KW": {"kuwait", "kuweit"},
+            "LA": {"laos", "lao"},
+            "LB": {"lebanon", "libanon"},
+            "LK": {"sri lanka", "ceylon"},
+            "MM": {"myanmar", "burma"},
+            "MN": {"mongolia", "mongolei"},
+            "MY": {"malaysia", "malaysien"},
+            "NP": {"nepal"},
+            "OM": {"oman"},
+            "PH": {"philippines", "philippinen"},
+            "PK": {"pakistan", "pakstan"},
+            "PS": {"palestine", "palästina"},
+            "QA": {"qatar", "katar"},
+            "SA": {"saudi arabia", "saudi-arabien"},
+            "SG": {"singapore", "singapur"},
+            "SY": {"syria", "syrien"},
+            "TH": {"thailand", "thailändisch"},
+            "TJ": {"tajikistan", "tadschikistan"},
+            "TM": {"turkmenistan", "turkmenien"},
+            "TW": {"taiwan", "roc"},
+            "UZ": {"uzbekistan", "usbekistan"},
+            "VN": {"vietnam", "viet nam"},
+            "YE": {"yemen", "jemen"},
+            # -----------------
+            # Africa
+            # -----------------
+            "AO": {"angola"},
+            "BF": {"burkina faso"},
+            "BI": {"burundi"},
+            "BJ": {"benin"},
+            "BW": {"botswana"},
+            "CD": {"dr congo", "democratic republic congo", "kongo-kinshasa", "zaire"},
+            "CF": {"central african republic", "zentralafrikanische republik"},
+            "CG": {"congo-brazzaville", "republic of congo"},
+            "CI": {"cote d'ivoire", "ivory coast", "côte d’ivoire"},
+            "CM": {"cameroon", "kamerun"},
+            "CV": {"cape verde", "kap verde", "cabo verde"},
+            "DJ": {"djibouti", "dschibuti"},
+            "DZ": {"algeria", "algerien"},
+            "EG": {"egypt", "ägypten"},
+            "ER": {"eritrea"},
+            "ET": {"ethiopia", "äthiopien"},
+            "GA": {"gabon"},
+            "GH": {"ghana"},
+            "GM": {"gambia"},
+            "GN": {"guinea", "guinea-conakry"},
+            "GQ": {"equatorial guinea", "äquatorialguinea"},
+            "GW": {"guinea-bissau"},
+            "KE": {"kenya", "kenia"},
+            "KM": {"comoros", "komoren"},
+            "LR": {"liberia"},
+            "LS": {"lesotho"},
+            "LY": {"libya", "libyen"},
+            "MA": {"morocco", "marokko"},
+            "MG": {"madagascar", "madagaskar"},
+            "ML": {"mali"},
+            "MR": {"mauritania", "mauretanien"},
+            "MU": {"mauritius"},
+            "MW": {"malawi"},
+            "MZ": {"mozambique", "mosambik"},
+            "NA": {"namibia"},
+            "NE": {"niger"},
+            "NG": {"nigeria", "nijeria"},
+            "RE": {"réunion", "reunion"},
+            "RW": {"rwanda"},
+            "SC": {"seychelles"},
+            "SD": {"sudan"},
+            "SL": {"sierra leone"},
+            "SN": {"senegal"},
+            "SO": {"somalia", "somalien"},
+            "SS": {"south sudan", "südsudan"},
+            "ST": {"sao tome and principe", "são tomé und príncipe"},
+            "SZ": {"eswatini", "swaziland"},
+            "TD": {"chad", "tsjad"},
+            "TG": {"togo"},
+            "TN": {"tunisia", "tunesien"},
+            "TZ": {"tanzania", "tansania"},
+            "UG": {"uganda"},
+            "YT": {"mayotte"},
+            "ZA": {"south africa", "südafrika"},
+            "ZM": {"zambia", "sambia"},
+            "ZW": {"zimbabwe", "simbabwe"},
+            # -----------------
+            # Americas
+            # -----------------
+            "AG": {"antigua and barbuda"},
+            "AI": {"anguilla"},
+            "AN": {"netherlands antilles"},  # obsolete code
+            "AR": {"argentina", "argentinien"},
+            "AW": {"aruba"},
+            "BB": {"barbados"},
+            "BO": {"bolivia", "bolivien"},
+            "BR": {"brazil", "brasilien"},
+            "BS": {"bahamas"},
+            "BZ": {"belize"},
+            "CA": {"canada", "kanada"},
+            "CL": {"chile"},
+            "CO": {"colombia", "kolumbien"},
+            "CR": {"costa rica", "costarica"},
+            "CU": {"cuba", "kuba"},
+            "DM": {"dominica"},
+            "DO": {"dominican republic", "dominikanische republik"},
+            "EC": {"ecuador"},
+            "GD": {"grenada"},
+            "GF": {"french guiana", "guyane"},
+            "GL": {"greenland", "grönland"},
+            "GT": {"guatemala"},
+            "GY": {"guyana"},
+            "HN": {"honduras"},
+            "HT": {"haiti"},
+            "JM": {"jamaica", "jamaika"},
+            "KN": {"saint kitts and nevis", "st kitts und nevis"},
+            "LC": {"saint lucia"},
+            "MQ": {"martinique"},
+            "MX": {"mexico", "mexiko"},
+            "NI": {"nicaragua"},
+            "PA": {"panama", "panamá"},
+            "PE": {"peru", "perú"},
+            "PF": {"french polynesia", "polynésie française"},
+            "PR": {"puerto rico", "puertorico"},
+            "PY": {"paraguay"},
+            "SR": {"suriname", "surinam"},
+            "SV": {"el salvador", "elsalvador"},
+            "TC": {"turks and caicos islands"},
+            "TT": {"trinidad and tobago", "trinidad tobago"},
+            "UY": {"uruguay"},
+            "VC": {"saint vincent and the grenadines"},
+            "VE": {"venezuela"},
+            # -----------------
+            # Oceania
+            # -----------------
+            "AS": {"american samoa"},
+            "AU": {"australia", "australien"},
+            "CK": {"cook islands"},
+            "FJ": {"fiji", "fidji"},
+            "FM": {"micronesia", "föderierte staaten von mikronesien"},
+            "GU": {"guam"},
+            "KI": {"kiribati"},
+            "MH": {"marshall islands"},
+            "MP": {"northern mariana islands"},
+            "NC": {"new caledonia", "nouvelle-calédonie"},
+            "NR": {"nauru"},
+            "NU": {"niue"},
+            "NZ": {"new zealand", "neuseeland"},
+            "PG": {"papua new guinea", "papua-neuguinea"},
+            "PN": {"pitcairn islands"},
+            "PW": {"palau"},
+            "SB": {"solomon islands", "salomonen"},
+            "TO": {"tonga"},
+            "TV": {"tuvalu"},
+            "VU": {"vanuatu"},
+            "WF": {"wallis and futuna"},
+            "WS": {"samoa"}
+        }
+
     def get_iso_alpha2(self, country_identifier: str) -> Optional[str]:
         """
-        Convert any country identifier (name, ISO code) to ISO alpha-2 code
+        Convert any country identifier (name or code) to ISO alpha-2 code
+        by matching it in self.country_mapping.
         """
-        country_identifier = country_identifier.strip().upper()
-        
-        # Direct ISO code match
-        if country_identifier in self.country_mapping:
-            # Get the alpha-2 code (some entries might be alpha-3)
-            for code in self.country_mapping[country_identifier]['iso']:
+        country_identifier = country_identifier.strip().lower()
+        upper_id = country_identifier.upper()
+        if upper_id in self.country_mapping:
+            for code in self.country_mapping[upper_id]['iso']:
                 if len(code) == 2:
                     return code
-        
-        # Try to find by name
-        identifier_lower = country_identifier.lower()
-        for iso_code, data in self.country_mapping.items():
-            if len(iso_code) == 2:  # Only check alpha-2 entries
-                if identifier_lower in data['names']:
-                    return iso_code
-        
+
+        for alpha2, data in self.country_mapping.items():
+            if len(alpha2) == 2:
+                for known_name in data['names']:
+                    if country_identifier == known_name:
+                        return alpha2
         return None
-    
+
     def detect_country_in_text(self, text: str) -> Optional[str]:
         """
-        Detect country references in text and return ISO alpha-2 code
+        Return the first alpha-2 code detected in 'text':
+          - Check for explicit 2/3 letter ISO codes.
+          - Otherwise, search for any known synonym.
         """
+        text_upper = text.upper()
         text_lower = text.lower()
-        
-        # First try to find exact ISO codes
-        for match in re.finditer(r'\b([A-Z]{2,3})\b', text.upper()):
+
+        for match in re.finditer(r'\b([A-Z]{2,3})\b', text_upper):
             iso_code = self.get_iso_alpha2(match.group(1))
             if iso_code:
                 return iso_code
-        
-        # Then try common names and variations
-        for iso_code, data in self.country_mapping.items():
-            if len(iso_code) == 2:  # Only check alpha-2 entries
-                if any(name in text_lower for name in data['names']):
-                    return iso_code
-        
+
+        for alpha2, data in self.country_mapping.items():
+            if len(alpha2) == 2:
+                for known_name in data['names']:
+                    if known_name in text_lower:
+                        return alpha2
         return None
+
+if __name__ == '__main__':
+    detector = CountryDetector()
+    test_queries = [
+        "I am planning a trip to Deutschland next summer.",
+        "She moved to Switzerland for work.",
+        "Traveling to the United Kingdom was fun.",
+        "We visited Tschechien recently."  # German variant for Czech Republic
+    ]
+    for query in test_queries:
+        code = detector.detect_country_in_text(query)
+        print(f"Query: '{query}' => Detected country code: {code}")
 
 ##############################################################################
 # 2) SESSION STATE INIT
