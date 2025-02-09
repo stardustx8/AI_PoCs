@@ -519,6 +519,8 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
         Return snippet of first 5 words or so from lines_list,
         or '(no lines)' if truly empty.
         """
+        # NOTE: This function remains in place, but
+        # we do NOT use its output in the new warnings.
         joined = " ".join(lines_list).strip()
         if not joined:
             return "(no lines)"
@@ -528,34 +530,21 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
             snippet += "..."
         return snippet[:200]  # limit length
 
-    def check_next_marker(start_idx: int) -> bool:
-        """
-        Look ahead to see if there's a marker line coming up next
-        (ignoring empty lines and separator lines).
-        """
-        j = start_idx
-        while j < n:
-            line = lines[j].strip()
-            if not line or re.fullmatch(r'[-]+', line):
-                j += 1
-                continue
-            return bool(marker_re.match(line))
-        return False
-
     def flush_outside_if_needed():
         """If outside_buffer has real text (not just separators), warn with snippet."""
         if not outside_buffer:
             return
         joined = " ".join(outside_buffer).strip()
+        outside_buffer.clear()
         # Skip if it's just separators ('=' or '-' or blank) or empty
         if not joined or re.fullmatch(r'[=\-\s]+', joined):
-            outside_buffer.clear()
             return
-        # Only warn if we're not about to start a new block
-        if not check_next_marker(i):
+        # Only warn about outside text if we're not in a block
+        if state == "idle":
+            # We omit snippet usage in the new incomplete-block warnings,
+            # but we keep it for outside text warnings
             snip = snippet_of_lines([joined])
             st.warning(f"Text outside valid markers not processed: '{snip}'")
-        outside_buffer.clear()
 
     def flush_current_block(should_reverse=False):
         """
@@ -617,11 +606,8 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
         code_str   = mm.group(2)
 
         if state == "idle":
-            # Only flush outside lines if they won't be part of a block
-            if not end_of_str:  # If this is a block start, don't flush
-                outside_buffer.clear()
-            else:
-                flush_outside_if_needed()
+            # Only flush outside lines if we're starting a new block
+            flush_outside_if_needed()
 
             if end_of_str:
                 # reversed block start
@@ -645,8 +631,7 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
                 state = "idle"
             else:
                 # encountered a different marker => incomplete block
-                snippet_txt = snippet_of_lines(lines_in_block)
-                st.warning(f"Incomplete block '{current_code}', skipping. Snippet: '{snippet_txt}'")
+                st.warning(f"Missing end marker for '{current_code}', block was skipped.")
                 # reset
                 lines_in_block = []
                 current_code = None
@@ -665,8 +650,7 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
                 state = "idle"
             else:
                 # different marker => incomplete reversed block
-                snippet_txt = snippet_of_lines(lines_in_block)
-                st.warning(f"Incomplete reversed block '{current_code}', skipping. Snippet: '{snippet_txt}'")
+                st.warning(f"Missing start marker for '{current_code}', block was skipped.")
                 lines_in_block = []
                 current_code = None
                 state = "idle"
@@ -681,13 +665,13 @@ def parse_marker_blocks_linewise(text: str) -> List[Dict[str,Any]]:
 
     # if we ended in a block => incomplete
     if state in ("normalBlock", "reversedBlock") and current_code:
-        snippet_txt = snippet_of_lines(lines_in_block)
-        msg_type = "reversed" if state == "reversedBlock" else "normal"
-        st.warning(f"Incomplete {msg_type} block '{current_code}', skipping. Snippet: '{snippet_txt}'")
+        if state == "normalBlock":
+            st.warning(f"Missing end marker for '{current_code}', block was skipped.")
+        else:
+            st.warning(f"Missing start marker for '{current_code}', block was skipped.")
 
-    # after loop => flush leftover outside lines only if not followed by a marker
-    if not check_next_marker(i):
-        flush_outside_if_needed()
+    # after loop => flush leftover outside lines
+    flush_outside_if_needed()
 
     st.write(f"DEBUG: partial-block parse => total chunk objects => {len(final_chunks)}")
 
@@ -2113,13 +2097,10 @@ def main():
         if submitted:
             if uploaded_files:
                 combined_text = ""
-                for i, uploaded_file in enumerate(uploaded_files):
+                for uploaded_file in uploaded_files:
                     text = extract_text_from_file(uploaded_file)
                     if text:
-                        # Add newlines before the text, but no separator
-                        if i > 0:  # Only add extra newlines between files
-                            combined_text += "\n\n"
-                        combined_text += text
+                        combined_text += f"\n\n---\n\n{text}"
 
                 if combined_text:
                     # set st.session_state.uploaded_text
