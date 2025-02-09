@@ -1414,7 +1414,7 @@ def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[
     st.write(f"Stored {len(texts)} chunks in collection '{collection_name}'.")
 
 
-def query_collection(query: str, collection_name: str, n_results: int = 3):
+def query_collection(query: str, collection_name: str, n_results: int = 10):
     """Enhanced country detection with proper ChromaDB querying"""
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
