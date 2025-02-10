@@ -149,7 +149,14 @@ from typing import Optional
 from pathlib import Path
 import pycountry
 import textwrap
-
+from docx.oxml.table import CT_Tbl
+from docx.oxml.text.paragraph import CT_P
+from docx.table import _Cell, Table
+from docx.text.paragraph import Paragraph
+import docx
+import base64
+from io import BytesIO
+from PIL import Image
 
 try:
     import pandas as pd
@@ -1008,6 +1015,83 @@ def embed_text(
         return embedding_data
     return embeddings
 
+def process_docx_with_images_and_tables(docx_file) -> str:
+    """
+    Enhanced DOCX processor that handles:
+    1. Regular text
+    2. Tables (converted to markdown)
+    3. Images (saved to temp directory and referenced)
+    """
+    doc = docx.Document(docx_file)
+    full_text = []
+    
+    def process_paragraph(paragraph: Paragraph) -> str:
+        """Process a single paragraph, including any inline images."""
+        text = paragraph.text
+        
+        # Handle inline images in the paragraph
+        for run in paragraph.runs:
+            if run._r.drawing_lst:
+                try:
+                    # Extract image
+                    image_data = run._r.drawing_lst[0].xpath('.//a:blip/@r:embed')[0]
+                    image_rel = doc.part.rels[image_data]
+                    image_bytes = image_rel.target_part.blob
+                    
+                    # Convert image to base64 for storage
+                    image = Image.open(BytesIO(image_bytes))
+                    buffered = BytesIO()
+                    image.save(buffered, format=image.format)
+                    img_str = base64.b64encode(buffered.getvalue()).decode()
+                    
+                    # Add image placeholder with metadata
+                    text += f"\n[IMAGE: {image.format}, {image.size}]\n"
+                    
+                except Exception as e:
+                    text += f"\n[IMAGE: Error processing - {str(e)}]\n"
+        
+        return text.strip()
+
+    def process_table(table: Table) -> str:
+        """Convert table to markdown format."""
+        markdown_table = []
+        
+        # Process header row
+        header_row = []
+        for cell in table.rows[0].cells:
+            header_row.append(cell.text.strip() or "‑")  # Use placeholder if empty
+        markdown_table.append("| " + " | ".join(header_row) + " |")
+        
+        # Add markdown separator
+        markdown_table.append("| " + " | ".join(["---"] * len(header_row)) + " |")
+        
+        # Process data rows
+        for row in table.rows[1:]:
+            row_cells = []
+            for cell in row.cells:
+                row_cells.append(cell.text.strip() or "‑")  # Use placeholder if empty
+            markdown_table.append("| " + " | ".join(row_cells) + " |")
+        
+        return "\n".join(markdown_table)
+
+    # Process all elements in order
+    for element in doc.element.body:
+        if isinstance(element, CT_P):
+            # It's a paragraph
+            paragraph = Paragraph(element, doc)
+            text = process_paragraph(paragraph)
+            if text:
+                full_text.append(text)
+                
+        elif isinstance(element, CT_Tbl):
+            # It's a table
+            table = Table(element, doc)
+            table_text = process_table(table)
+            if table_text:
+                full_text.append("\n" + table_text + "\n")
+
+    return "\n\n".join(full_text)
+
 def extract_text_from_file(uploaded_file, reverse=False) -> str:
     file_name = uploaded_file.name.lower()
     if file_name.endswith('.txt'):
@@ -1035,8 +1119,7 @@ def extract_text_from_file(uploaded_file, reverse=False) -> str:
             text = ""
     elif file_name.endswith('.docx'):
         try:
-            doc = docx.Document(uploaded_file)
-            text = "\n".join([para.text for para in doc.paragraphs])
+            text = process_docx_with_images_and_tables(uploaded_file)
         except Exception as e:
             st.error(f"Error reading DOCX file: {e}")
             text = ""
@@ -1967,7 +2050,19 @@ def chunk_text(text: str) -> List[str]:
     return parts
 
 
+def wrap_text_with_markers(text: str, iso_code: str) -> str:
+    """Wraps text with appropriate markers based on ISO code."""
+    iso_code = iso_code.upper()
+    start_marker = f"========== {iso_code} =========="
+    end_marker = f"========== END OF {iso_code} =========="
+    return f"{start_marker}\n\n{text}\n\n{end_marker}"
 
+def validate_iso_code(code: str) -> bool:
+    """Validates if the provided code is a valid ISO country code."""
+    try:
+        return bool(pycountry.countries.get(alpha_2=code.upper()))
+    except (AttributeError, KeyError):
+        return False
 
 
 
@@ -2254,41 +2349,57 @@ def main():
                 key=st.session_state.voice_instructions_widget_key
             )
 
-       # --- Step 1: Upload Context ---
+        # --- Step 1: Upload Context ---
         st.subheader("Step 1: Upload Context")
+        
+        # Create columns for the ISO code input
+        iso_col1, iso_col2 = st.columns([2, 1])
+        
+        with iso_col1:
+            iso_code = st.text_input(
+                "Enter the ISO country code (e.g., CH for Switzerland, US for United States)",
+                max_chars=2,
+                help="This code will be used to wrap your document content with appropriate markers."
+            ).upper()
 
-        # Define the reverse text order checkbox BEFORE the form.
-        # reverse_text_order = st.sidebar.checkbox("Reverse extracted text order", value=True)
+        with iso_col2:
+            if iso_code:
+                if validate_iso_code(iso_code):
+                    st.success(f"✓ Valid code: {iso_code}")
+                else:
+                    st.error("Invalid code")
 
-        # Wrap the uploader in a form with clear_on_submit=True.
+        # Wrap the uploader in a form with clear_on_submit=True
         with st.form("upload_form", clear_on_submit=True):
             uploaded_files = st.file_uploader(
-                "-> Upload one or more *.txt documents (EXPERIMENTAL: pdf, docx, csv, xlsx, rtf)",
+                "-> Upload one or more documents",
                 type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
                 accept_multiple_files=True
             )
             submitted = st.form_submit_button("Run Step 1: Upload Context")
 
         if submitted:
+            if not iso_code or not validate_iso_code(iso_code):
+                st.error("Please enter a valid ISO country code first.")
+                return
+
             if uploaded_files:
                 combined_text = ""
                 for uploaded_file in uploaded_files:
                     text = extract_text_from_file(uploaded_file)
                     if text:
-                        combined_text += f"\n\n---\n\n{text}"
+                        # Wrap each document's text with markers
+                        marked_text = wrap_text_with_markers(text, iso_code)
+                        combined_text += f"\n\n---\n\n{marked_text}"
 
                 if combined_text:
-                    # set st.session_state.uploaded_text
                     st.session_state.uploaded_text = combined_text
-
-                    # ALSO update "upload" stage properly:
                     update_stage("upload", {
                         'content': combined_text,
                         'preview': combined_text[:600],
                         'size': len(combined_text)
                     })
-
-                    st.success("Files uploaded and processed!")
+                    st.success("Files uploaded and processed with markers!")
                 else:
                     st.error("No text could be extracted...")
             else:
