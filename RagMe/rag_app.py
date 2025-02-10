@@ -192,14 +192,11 @@ CHROMA_DIRECTORY = "chromadb_storage"
 def init_chroma_client():
     if "api_key" not in st.session_state or not st.session_state.get("user_id"):
         return None, None
-    
-    user_dir = f"chromadb_storage_user_{st.session_state.user_id}"
-    os.makedirs(user_dir, exist_ok=True)
-    
+    dirs = get_user_specific_directory(st.session_state.user_id)  # Now returns dict with multiple dirs
     embedding_function_instance = OpenAIEmbeddingFunction(st.session_state["api_key"])
     client = chromadb.Client(Settings(
         chroma_db_impl="duckdb+parquet",
-        persist_directory=user_dir
+        persist_directory=dirs["chroma"]  # Use the chroma-specific dir
     ))
     return client, embedding_function_instance
 
@@ -1015,87 +1012,175 @@ def embed_text(
         return embedding_data
     return embeddings
 
-def process_docx_with_images_and_tables(docx_file) -> str:
+def wrap_text_with_xml(text: str, iso_code: str, filename: str) -> str:
+    """Wraps text with XML tags including metadata."""
+    iso_code = iso_code.upper()
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<{iso_code}>
+    <metadata>
+        <filename>{filename}</filename>
+        <timestamp>{timestamp}</timestamp>
+        <country_code>{iso_code}</country_code>
+    </metadata>
+    <content>
+{text}
+    </content>
+</{iso_code}>"""
+    
+    return xml_content
+
+def format_table_as_xml(table: Table) -> str:
+    """Convert table to XML format."""
+    xml_rows = []
+    
+    # Process header row
+    header_cells = [cell.text.strip() or "‑" for cell in table.rows[0].cells]
+    xml_rows.append("        <header>")
+    for cell in header_cells:
+        xml_rows.append(f"            <cell>{cell}</cell>")
+    xml_rows.append("        </header>")
+    
+    # Process data rows
+    xml_rows.append("        <rows>")
+    for row in table.rows[1:]:
+        xml_rows.append("            <row>")
+        for cell in row.cells:
+            cell_text = cell.text.strip() or "‑"
+            xml_rows.append(f"                <cell>{cell_text}</cell>")
+        xml_rows.append("            </row>")
+    xml_rows.append("        </rows>")
+    
+    return "\n".join([
+        "    <table>",
+        *xml_rows,
+        "    </table>"
+    ])
+
+
+def save_image_to_store(image_bytes: bytes, filename: str, iso_code: str, user_id: str) -> str:
+    """Save image to user & country specific directory."""
+    dirs = get_user_specific_directory(user_id)
+    country_dir = os.path.join(dirs["images"], iso_code.lower())
+    os.makedirs(country_dir, exist_ok=True)
+    
+    image_hash = hashlib.md5(image_bytes).hexdigest()[:10]
+    image = Image.open(BytesIO(image_bytes))
+    ext = image.format.lower()
+    unique_filename = f"{image_hash}_{filename}_{time.time()}.{ext}"
+    
+    image_path = os.path.join(country_dir, unique_filename)
+    with open(image_path, 'wb') as f:
+        f.write(image_bytes)
+    
+    return image_path
+
+def save_xml_document(xml_content: str, filename: str, iso_code: str, user_id: str) -> str:
+    """Save XML document to user & country specific directory."""
+    dirs = get_user_specific_directory(user_id)
+    xml_dir = os.path.join(dirs["xml"], iso_code.lower())
+    os.makedirs(xml_dir, exist_ok=True)
+    
+    doc_hash = hashlib.md5(xml_content.encode()).hexdigest()[:10]
+    unique_filename = f"{doc_hash}_{filename}_{time.time()}.xml"
+    
+    xml_path = os.path.join(xml_dir, unique_filename)
+    with open(xml_path, 'w', encoding='utf-8') as f:
+        f.write(xml_content)
+    
+    return xml_path
+
+def process_docx_with_xml(docx_file, iso_code: str, user_id: str) -> tuple[str, str]:
+    dirs = get_user_specific_directory(user_id)
     """
-    Enhanced DOCX processor that handles:
-    1. Regular text
-    2. Tables (converted to markdown)
-    3. Images (saved to temp directory and referenced)
+    Enhanced DOCX processor that creates XML output with:
+    1. Regular text in <text> tags
+    2. Tables in <table> tags
+    3. Images saved to disk with <image> references
+    Returns: (xml_content, xml_path)
     """
     doc = docx.Document(docx_file)
-    full_text = []
+    xml_elements = []
     
     def process_paragraph(paragraph: Paragraph) -> str:
-        """Process a single paragraph, including any inline images."""
-        text = paragraph.text
+        text_content = paragraph.text
+        image_refs = []
         
-        # Handle inline images in the paragraph
         for run in paragraph.runs:
             if run._r.drawing_lst:
                 try:
-                    # Extract image
                     image_data = run._r.drawing_lst[0].xpath('.//a:blip/@r:embed')[0]
                     image_rel = doc.part.rels[image_data]
                     image_bytes = image_rel.target_part.blob
                     
-                    # Convert image to base64 for storage
-                    image = Image.open(BytesIO(image_bytes))
-                    buffered = BytesIO()
-                    image.save(buffered, format=image.format)
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
+                    image_path = save_image_to_store(image_bytes, docx_file.name, iso_code, user_id)
                     
-                    # Add image placeholder with metadata
-                    text += f"\n[IMAGE: {image.format}, {image.size}]\n"
+                    image = Image.open(BytesIO(image_bytes))
+                    image_ref = f"""    <image>
+        <path>{image_path}</path>
+        <format>{image.format}</format>
+        <size>
+            <width>{image.size[0]}</width>
+            <height>{image.size[1]}</height>
+        </size>
+    </image>"""
+                    image_refs.append(image_ref)
                     
                 except Exception as e:
-                    text += f"\n[IMAGE: Error processing - {str(e)}]\n"
+                    image_refs.append(f"    <error>Failed to process image: {str(e)}</error>")
         
-        return text.strip()
+        result = []
+        if text_content.strip():
+            result.append(f"    <text>{text_content}</text>")
+        result.extend(image_refs)
+        return "\n".join(result)
 
-    def process_table(table: Table) -> str:
-        """Convert table to markdown format."""
-        markdown_table = []
-        
-        # Process header row
-        header_row = []
-        for cell in table.rows[0].cells:
-            header_row.append(cell.text.strip() or "‑")  # Use placeholder if empty
-        markdown_table.append("| " + " | ".join(header_row) + " |")
-        
-        # Add markdown separator
-        markdown_table.append("| " + " | ".join(["---"] * len(header_row)) + " |")
-        
-        # Process data rows
-        for row in table.rows[1:]:
-            row_cells = []
-            for cell in row.cells:
-                row_cells.append(cell.text.strip() or "‑")  # Use placeholder if empty
-            markdown_table.append("| " + " | ".join(row_cells) + " |")
-        
-        return "\n".join(markdown_table)
-
-    # Process all elements in order
+    # Process all elements
     for element in doc.element.body:
         if isinstance(element, CT_P):
-            # It's a paragraph
-            paragraph = Paragraph(element, doc)
-            text = process_paragraph(paragraph)
+            text = process_paragraph(Paragraph(element, doc))
             if text:
-                full_text.append(text)
-                
+                xml_elements.append(text)
         elif isinstance(element, CT_Tbl):
-            # It's a table
-            table = Table(element, doc)
-            table_text = process_table(table)
-            if table_text:
-                full_text.append("\n" + table_text + "\n")
+            table_xml = format_table_as_xml(Table(element, doc))
+            if table_xml:
+                xml_elements.append(table_xml)
+    
+    # Combine all elements
+    content = "\n".join(xml_elements)
+    
+    # Generate the final XML
+    xml_content = wrap_text_with_xml(content, iso_code, docx_file.name)
+    
+    # Save the XML and get its path
+    xml_path = save_xml_document(xml_content, docx_file.name, iso_code, user_id)
+    
+    return xml_content, xml_path
 
-    return "\n\n".join(full_text)
+def initialize_user_storage():
+    if "user_id" not in st.session_state or not st.session_state.user_id:
+        return None, None
+        
+    if "api_key" not in st.session_state:
+        return None, None
+        
+    return init_user_chroma_client(st.session_state.user_id)
 
-def extract_text_from_file(uploaded_file, reverse=False) -> str:
+def extract_text_from_file(uploaded_file, iso_code: str, user_id: str = None, reverse: bool = False) -> str:
+    """Extract text from various file formats."""
     file_name = uploaded_file.name.lower()
-    if file_name.endswith('.txt'):
+    
+    if file_name.endswith('.docx'):
+        try:
+            text, xml_path = process_docx_with_xml(uploaded_file, iso_code, user_id)
+            return text
+        except Exception as e:
+            st.error(f"Error reading DOCX file: {e}")
+            return ""
+    elif file_name.endswith('.txt'):
         text = uploaded_file.read().decode("utf-8")
+        return wrap_text_with_xml(text, iso_code, uploaded_file.name)
     elif file_name.endswith('.pdf'):
         reader = PdfReader(uploaded_file)
         text = ""
@@ -1116,12 +1201,6 @@ def extract_text_from_file(uploaded_file, reverse=False) -> str:
             text = df.to_csv(index=False)
         except Exception as e:
             st.error(f"Error reading Excel file: {e}")
-            text = ""
-    elif file_name.endswith('.docx'):
-        try:
-            text = process_docx_with_images_and_tables(uploaded_file)
-        except Exception as e:
-            st.error(f"Error reading DOCX file: {e}")
             text = ""
     elif file_name.endswith('.rtf'):
         try:
@@ -1473,28 +1552,37 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
     return coll
 
 
-def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[str, Any]]], metadatas: Optional[List[dict]] = None, ids: Optional[List[str]] = None):
-    if ids is None:
-        ids = [str(uuid.uuid4()) for _ in chunks]
-    
-    # Extract text and metadata from chunks if they're dictionaries
+def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[str, Any]]], 
+                           xml_paths: List[str], metadatas: Optional[List[dict]] = None):
     if isinstance(chunks[0], dict):
         texts = [chunk["text"] for chunk in chunks]
-        chunk_metadatas = [chunk["metadata"] for chunk in chunks]
+        chunk_metadatas = [
+            {
+                **chunk["metadata"],
+                "xml_path": xml_path,
+                "content_type": detect_content_type(chunk["text"])
+            }
+            for chunk, xml_path in zip(chunks, xml_paths)
+        ]
     else:
         texts = chunks
-        chunk_metadatas = metadatas if metadatas else [{"source": "uploaded_document"} for _ in chunks]
+        chunk_metadatas = [
+            {
+                **(m or {}),
+                "xml_path": xml_path,
+                "content_type": detect_content_type(t)
+            }
+            for t, m, xml_path in zip(texts, (metadatas or [{}] * len(texts)), xml_paths)
+        ]
     
-    force_flag = st.session_state.get("force_recreate", False)
-    coll = create_or_load_collection(collection_name, force_recreate=force_flag)
-    coll.add(documents=texts, metadatas=chunk_metadatas, ids=ids)
+    ids = [str(uuid.uuid4()) for _ in chunks]
+    coll = create_or_load_collection(collection_name)
+    coll.add(
+        documents=texts,
+        metadatas=chunk_metadatas,
+        ids=ids
+    )
     chroma_client.persist()
-    
-    update_stage('store', {
-        'collection': collection_name,
-        'count': len(texts)
-    })
-    st.write(f"Stored {len(texts)} chunks in collection '{collection_name}'.")
 
 
 def query_collection(query: str, collection_name: str, n_results: int = 10):
@@ -1843,10 +1931,23 @@ def create_user_session():
         st.session_state.user_id = None
         st.session_state.is_authenticated = False
 
-def get_user_specific_directory(user_id: str) -> str:
-    """Create unique ChromaDB directory for each user"""
+def get_user_specific_directory(user_id: str) -> dict:
+    """Create unique directories for each user"""
     hashed_id = hashlib.sha256(user_id.encode()).hexdigest()[:10]
-    return f"chromadb_storage_user_{hashed_id}"
+    base_dir = f"chromadb_storage_user_{hashed_id}"
+    
+    dirs = {
+        "base": base_dir,
+        "chroma": base_dir,
+        "images": os.path.join(base_dir, "images"),
+        "xml": os.path.join(base_dir, "xml")
+    }
+    
+    # Create all directories
+    for dir_path in dirs.values():
+        os.makedirs(dir_path, exist_ok=True)
+        
+    return dirs
 
 def load_users():
     user_file = Path("users.json")
@@ -1916,7 +2017,63 @@ def delete_user_collections(user_id: str) -> tuple[bool, str]:
         return False, f"Error deleting collections: {str(e)}"
 
 
-
+def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
+    """
+    Deletes all data for a specific country code in a user's collection.
+    Also removes associated images from the image store.
+    
+    Returns:
+        tuple[bool, str]: (success, message)
+    """
+    if not iso_code or not validate_iso_code(iso_code):
+        return False, "Invalid country code"
+    
+    try:
+        # 1. Delete images for this country
+        image_dir = Path(f"image_store/{iso_code.lower()}")
+        if image_dir.exists():
+            shutil.rmtree(image_dir)
+        
+        # 2. Get the ChromaDB collection
+        user_dir = f"chromadb_storage_user_{user_id}"
+        temp_client = chromadb.Client(Settings(
+            chroma_db_impl="duckdb+parquet",
+            persist_directory=user_dir
+        ))
+        
+        collection = temp_client.get_collection(
+            name="rag_collection",
+            embedding_function=embedding_function_instance
+        )
+        
+        # 3. Query and delete documents for this country code
+        try:
+            # Get all documents for this country
+            results = collection.get(
+                where={"country_code": iso_code.upper()}
+            )
+            
+            if results and results['ids']:
+                # Delete the documents
+                collection.delete(
+                    ids=results['ids']
+                )
+                temp_client.persist()
+                
+                return True, f"Successfully deleted {len(results['ids'])} documents and associated images for country {iso_code}"
+            else:
+                return True, f"No documents found for country {iso_code}"
+                
+        except Exception as e:
+            return False, f"Error querying/deleting documents: {str(e)}"
+            
+    except Exception as e:
+        return False, f"Error accessing data: {str(e)}"
+    finally:
+        try:
+            temp_client.persist()
+        except:
+            pass
 
 
 
@@ -2049,6 +2206,100 @@ def chunk_text(text: str) -> List[str]:
 
     return parts
 
+def parse_xml_for_chunks(text: str) -> List[Dict[str, Any]]:
+    """Parse multiple XML documents into chunks."""
+    chunks = []
+    xml_docs = text.split('<?xml version="1.0" encoding="UTF-8"?>')
+    
+    for doc in xml_docs:
+        if not doc.strip():
+            continue
+            
+        doc = '<?xml version="1.0" encoding="UTF-8"?>' + doc
+        try:
+            chunk_data = parse_single_xml_doc(doc)
+            chunks.extend(chunk_data)
+        except Exception as e:
+            st.error(f"Error parsing XML document: {e}")
+            
+    update_stage("chunk", {
+        "chunks": [f"{c['text'][:200]}..." for c in chunks[:5]],  # Remove metadata display here
+        "full_chunks": [{
+            "text": c["text"],
+            "country": c["metadata"]["country_code"],  # Add country code directly
+            "metadata": c["metadata"]
+        } for c in chunks],
+        "total_chunks": len(chunks)
+    })
+    return chunks
+
+def parse_single_xml_doc(xml_text: str) -> List[Dict[str, Any]]:
+    """Process single XML document into chunks."""
+    import xml.etree.ElementTree as ET
+    from io import StringIO
+
+    doc_chunks = []
+    root = ET.parse(StringIO(xml_text)).getroot()
+    country_code = root.tag
+    metadata = {child.tag: child.text for child in root.find('metadata')}
+    
+    content = root.find('content')
+    buffer = []
+    buffer_size = 0
+    MAX_SIZE = 1000
+
+    for element in content:
+        # Handle text elements
+        if element.tag == 'text' and element.text:
+            text = element.text.strip()
+            if buffer_size + len(text) > MAX_SIZE and buffer:
+                doc_chunks.append({
+                    "text": "\n".join(buffer),
+                    "metadata": {**metadata, "country_code": country_code, "content_type": "text"}
+                })
+                buffer = []
+                buffer_size = 0
+            buffer.append(text)
+            buffer_size += len(text)
+
+        # Handle tables and images - always create new chunks
+        elif element.tag in ('table', 'image'):
+            if buffer:
+                doc_chunks.append({
+                    "text": "\n".join(buffer),
+                    "metadata": {**metadata, "country_code": country_code, "content_type": "text"}
+                })
+                buffer = []
+                buffer_size = 0
+
+            if element.tag == 'table':
+                doc_chunks.append({
+                    "text": ET.tostring(element, encoding='unicode'),
+                    "metadata": {**metadata, "country_code": country_code, "content_type": "table"}
+                })
+            else:
+                path = element.find('path').text
+                fmt = element.find('format').text
+                size = element.find('size')
+                dim = f"{size.find('width').text}x{size.find('height').text}"
+                doc_chunks.append({
+                    "text": f"Image: {path} ({dim} {fmt})",
+                    "metadata": {
+                        **metadata, 
+                        "country_code": country_code, 
+                        "content_type": "image",
+                        "image_path": path
+                    }
+                })
+
+    # Add remaining text buffer
+    if buffer:
+        doc_chunks.append({
+            "text": "\n".join(buffer),
+            "metadata": {**metadata, "country_code": country_code, "content_type": "text"}
+        })
+
+    return doc_chunks
 
 def wrap_text_with_markers(text: str, iso_code: str) -> str:
     """Wraps text with appropriate markers based on ISO code."""
@@ -2074,6 +2325,8 @@ def main():
 
     # Authentication
     create_user_session()
+
+    chroma_client, embedding_function_instance = init_chroma_client()
 
     with st.sidebar:
         st.header("User Authentication")
@@ -2139,8 +2392,8 @@ def main():
     st.title("RAG + Advanced Voice Mode (AVM) Cockpit")
     
     # Sidebar: API key and force recreate option
-    global chroma_client, embedding_function_instance
-    
+    # global chroma_client, embedding_function_instance
+
     api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     if api_key:
         set_openai_api_key(api_key)
@@ -2366,6 +2619,22 @@ def main():
             if iso_code:
                 if validate_iso_code(iso_code):
                     st.success(f"✓ Valid code: {iso_code}")
+                    
+                    # Add delete button
+                    if st.button(f"Delete data for {iso_code}"):
+                        with st.spinner(f"Deleting data for {iso_code}..."):
+                            success, message = delete_country_data(
+                                iso_code, 
+                                st.session_state.user_id
+                            )
+                            if success:
+                                st.success(message)
+                                # Clear relevant session state
+                                for stage in ['store', 'query', 'retrieve', 'generate']:
+                                    if f'{stage}_data' in st.session_state:
+                                        st.session_state[f'{stage}_data'] = None
+                            else:
+                                st.error(message)
                 else:
                     st.error("Invalid code")
 
@@ -2378,40 +2647,50 @@ def main():
             )
             submitted = st.form_submit_button("Run Step 1: Upload Context")
 
+        # In main(), in the upload section:
         if submitted:
             if not iso_code or not validate_iso_code(iso_code):
                 st.error("Please enter a valid ISO country code first.")
                 return
 
             if uploaded_files:
-                combined_text = ""
+                all_xml_docs = []
                 for uploaded_file in uploaded_files:
-                    text = extract_text_from_file(uploaded_file)
+                    text = extract_text_from_file(
+                        uploaded_file, 
+                        iso_code=iso_code,
+                        user_id=st.session_state.user_id
+                    )
                     if text:
-                        # Wrap each document's text with markers
-                        marked_text = wrap_text_with_markers(text, iso_code)
-                        combined_text += f"\n\n---\n\n{marked_text}"
+                        all_xml_docs.append(text)
 
-                if combined_text:
+                if all_xml_docs:
+                    # Combine without separators
+                    combined_text = "\n".join(all_xml_docs)
                     st.session_state.uploaded_text = combined_text
                     update_stage("upload", {
                         'content': combined_text,
                         'preview': combined_text[:600],
                         'size': len(combined_text)
                     })
-                    st.success("Files uploaded and processed with markers!")
+                    st.success("Files uploaded and processed!")
                 else:
                     st.error("No text could be extracted...")
-            else:
-                st.warning("No file selected.")
 
         # --- Step 2: Chunk Context ---
         st.subheader("Step 2: Chunk Context")
         if st.button("Run Step 2: Chunk Context"):
             if st.session_state.uploaded_text:
-                final_chunks = parse_marker_blocks_linewise(st.session_state.uploaded_text)
-                st.session_state.chunks = final_chunks
-                st.success(f"Found {len(final_chunks)} chunk(s).")
+                # Debug: Show first 500 chars of XML
+                st.code(st.session_state.uploaded_text[:500], language='xml')
+                
+                try:
+                    chunks = parse_xml_for_chunks(st.session_state.uploaded_text)
+                    st.session_state.chunks = chunks
+                    st.success(f"Found {len(chunks)} chunk(s).")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+                    st.code(traceback.format_exc())
             else:
                 st.warning("Please upload at least one document first.")
         
