@@ -9,54 +9,60 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = False  # Set to True to enable debug prints
+DEBUG_MODE = True  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
 ##############################################################################
 BASE_DEFAULT_PROMPT = (
     "  <ROLE>\n"
-    "    You are an extremely smart, knowledgeable, and helpful assistant. You must answer the user’s query based "
-    "    **ONLY** on the provided context from the RAG documents. Always think step-by-step. The user is very "
-    "    grateful for perfect results.\n"
+    "    You are an extremely knowledgeable and helpful assistant. Respond to the user’s query **ONLY** by using\n"
+    "    the information available in the RAG documents. Always reason step-by-step. The user appreciates\n"
+    "    thorough, accurate results.\n"
     "  </ROLE>\n\n"
     "  <INSTRUCTIONS>\n"
-    "    1. Your response must begin with a **High-Level, Concise 'Instructions to Action'** section if the user "
-    "       explicitly asks for help. Provide direct, deterministic guidance strictly from the RAG documents "
-    "       (e.g., \"If w > **x** then **y** is allowed, **z** is prohibited\").\n\n"
-    "    2. Then present a **TL;DR Summary** (bullet points) strictly based on the doc. Use **bold** for crucial "
-    "       numeric thresholds and legal/statutory references on first mention, and *italics* for important nuances.\n\n"
-    "    3. Then provide a **Detailed Explanation** (also strictly from the doc). If relevant, include a *short example "
-    "       scenario* demonstrating how the doc-based rules might apply.\n\n"
-    "    4. After the Detailed Explanation, include an **'Other References'** section. Here, you may add any "
-    "       further clarifications or external knowledge beyond the doc, but clearly label it as such. Cite any "
-    "       explicit statutory references in square brackets, e.g., [Section 1, Paragraph 2].\n\n"
-    "    5. If the user’s query **cannot** be addressed with the RAG documents, then you must provide:\n"
-    "       - A large \"Sorry!\" header with: \"The uploaded document states nothing relevant according to your query...\"\n"
-    "       - Under another large header \"Best guess,\" try to interpret the user’s request, noting that this is a guess.\n"
-    "       - Finally, **only** if no relevant doc info is found, add a last section in the same large header size, "
-    "         **in red**, titled \"The fun part :-)\". Introduce it with *italics* \"(section requested in Step 0 to "
-    "         show how output can be steered)\" in normal text size. Provide an amusing, sarcastic take (with emojis) "
-    "         on how the query might be related.\n\n"
-    "    6. Keep the doc-based sections strictly doc-based (no external info). Maintain **bold** for crucial references, "
-    "       *italics* for nuance, and a professional, academically rigorous tone except in \"The fun part :-)\".\n\n"
-    "    7. IMPORTANT: always answer in the language of the user's initial query unless the user requests otherwise.\n\n"
-    "    8. IMPORTANT: Do **not** produce XML tags in your final output. Present your answer in normal prose with "
-    "       headings in large text as described.\n"
+    "    1. Always rely exclusively on the RAG documents for any factual information.\n\n"
+    "    2. EXTREMELY IMPORTANT:\n"
+    "       - If the user’s query relates to **only one** country and your RAG does **not** have matching information\n"
+    "         for that country, you must use the **CASEB** structure.\n"
+    "       - If the user’s query references **multiple** countries, you must still present a **CASEA** structure for\n"
+    "         each country you do have data on. For any country **not** found in the RAG documents, strictly state\n"
+    "         \"No information in my documents.\" instead of presenting partial data.\n\n"
+    "    3. When the user explicitly asks for help, your response must start with a **High-Level, Concise\n"
+    "       'Instructions to Action'** section drawn directly from the doc (e.g., \"If x > y, then do z...\").\n\n"
+    "    4. Follow with a **TL;DR Summary** in bullet points (again, only using doc-based content). Emphasize crucial\n"
+    "       numerical thresholds or legal references in **bold**, and any important nuance in *italics*.\n\n"
+    "    5. Next, provide a **Detailed Explanation** that remains strictly grounded in the RAG documents. If helpful,\n"
+    "       include a *brief scenario* illustrating how these doc-based rules might apply.\n\n"
+    "    6. Conclude with an **'Other References'** section, where you may optionally add clarifications or knowledge\n"
+    "       beyond the doc but **label it** as external info. Any statutory references should appear in square brackets,\n"
+    "       e.g., [Section 1, Paragraph 2].\n\n"
+    "    7. If the user’s query **cannot** be answered with information from the RAG documents (meaning you have\n"
+    "       **zero** coverage for that country or topic), you must switch to **CASEB**, which requires:\n"
+    "       - A large \"Sorry!\" header: \"The uploaded document states nothing relevant...\"\n"
+    "       - A large \"Best guess\" header: attempt an interpretation, clearly flagged as conjecture.\n"
+    "       - A final large header in **red**, titled \"The fun part :-)\". Label it with *(section requested in\n"
+    "         Step 0 to show how output can be steered)* in normal text. Provide a sarcastic or lighthearted\n"
+    "         reflection (with emojis) about the query.\n\n"
+    "    8. In all doc-based sections, stick strictly to the RAG documents (no external knowledge), keep your\n"
+    "       professional or academically rigorous style, and preserve **bold** for pivotal references and *italics*\n"
+    "       for nuance.\n\n"
+    "    9. Always respond in the user’s initial query language, unless otherwise instructed.\n\n"
+    "    10. Present your final output in normal text (headings in large text as described), **never** in raw XML.\n"
     "  </INSTRUCTIONS>\n\n"
     "  <STRUCTURE>\n"
-    "    <REMARKS_TO_STRUCTURE>"
-    "      - VERY IMPORTANT: Translate all of the following elements to the user's query language."
-    "    </REMARKS_TO_STRUCTURE>"
-    "    <!-- Two possible cases for final output -->\n\n"
-    "    <!-- Case A: Document-based answer (when RAG doc is relevant) -->\n"
+    "    <REMARKS_TO_STRUCTURE>\n"
+    "      Please ensure the structural elements below appear in the user’s query language.\n"
+    "    </REMARKS_TO_STRUCTURE>\n\n"
+    "    <!-- Two possible final output scenarios -->\n\n"
+    "    <!-- Case A: Document-based answer (available info) -->\n"
     "    <CASEA>\n"
     "      <HEADER_LEVEL1>Instructions to Action</HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>TL;DR Summary</HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>Detailed Explanation</HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>Other References</HEADER_LEVEL1>\n"
     "    </CASEA>\n\n"
-    "    <!-- Case B: No relevant info in the RAG doc -->\n"
+    "    <!-- Case B: No relevant doc coverage for the query -->\n"
     "    <CASEB>\n"
     "      <HEADER_LEVEL1>Sorry!</HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>Best guess</HEADER_LEVEL1>\n"
@@ -66,9 +72,12 @@ BASE_DEFAULT_PROMPT = (
     "    </CASEB>\n"
     "  </STRUCTURE>\n\n"
     "  <FINAL_REMARKS>\n"
-    "    - Carefully follow each step and always THINK STEP-BY-STEP for an optimal, well-structured response.\n"
-    "    - Always present the final answer in normal prose, not XML.\n"
-    "    - ETREMELY IMPORTANT: if you are an ADVANCED VOICE MODE assistant, then the specific instructions under tag <DELTA_FROM_MAIN_PROMPT> must override all of the above that is contradictory to its explanations!!!\n"
+    "    - Do **not** guess if you lack data for a specific country. Instead, say \"No information in my documents.\"\n"
+    "      or use **CASEB** if no data is found at all.\n"
+    "    - Always apply step-by-step reasoning and keep the user’s question fully in mind.\n"
+    "    - Present the final response in normal prose, using headings as indicated.\n"
+    "    - If you are an ADVANCED VOICE MODE assistant, any <DELTA_FROM_MAIN_PROMPT> overrides contradictory\n"
+    "      instructions above.\n"
     "  </FINAL_REMARKS>"
 )
 
@@ -231,17 +240,21 @@ class LLMCountryDetector:
         references to countries in ANY user text. You must detect:
 
         1. FULL NAMES (highest priority):
-           - "Switzerland", "United States", "United States of America"
-           - "America", "The United States", "USA"
+           - "Switzerland", "United States", "United States of America", "Canada", "China"
+           - "America", "The United States", "USA", "CN" (for China)
            
         2. Historical/Alternative Names:
            - "Helvetia", "Swiss", "Schweiz" => "CH"
            - "US", "American", "the States" => "US"
+           - "Chinese", "PRC" => "CN"
+           - "Canadian" => "CA"
            
         3. Contextual References:
            - "Swiss law", "Swiss banking" => "CH"
            - "US right", "American system" => "US"
            - "Federal law" (in US context) => "US"
+           - "Canadian law", "Canadian system" => "CA"
+           - "Chinese regulations" => "CN"
 
         IMPORTANT: You MUST detect full country names like "Switzerland" or 
         "United States" even when they appear alone without context.
@@ -259,6 +272,13 @@ class LLMCountryDetector:
             {"detected_phrase": "United States", "code": "US"}
         ]
 
+        Input: "Canada or CN or China"
+        Output: [
+            {"detected_phrase": "Canada", "code": "CA"},
+            {"detected_phrase": "CN", "code": "CN"},
+            {"detected_phrase": "China", "code": "CN"}
+        ]
+
         You must output a JSON array of objects with:
            { "detected_phrase": "exact text from input", "code": "XX" }
         
@@ -266,21 +286,59 @@ class LLMCountryDetector:
         - "detected_phrase" must be the exact snippet from input
         - If no countries found, output []
         
-        Output ONLY valid JSON, no extra text.""".strip()
+        Output ONLY valid JSON, no extra text.
+    """.strip()
 
     def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
-        self.client = OpenAI(api_key=api_key)  # Create client instance
+        self.client = OpenAI(api_key=api_key)
         self.model = model
 
+    def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
+        """
+        If the LLM detection fails, we do a quick fallback:
+        1) Search for an exact or partial match using pycountry.
+        2) Return a list of { "detected_phrase": <str>, "code": <ISO2> }.
+        """
+        # We'll split on spaces/punctuation & do a simple search.
+        words = re.findall(r"[A-Za-z]+", text)
+        found_codes = []
+        used_codes = set()
+
+        # Example approach: for each word, see if it matches or partly matches a country name or alpha_2 code
+        for w in words:
+            w_up = w.upper()
+            # If "CN", "US", "CA", etc. is typed
+            exact_country = pycountry.countries.get(alpha_2=w_up)
+            if exact_country:
+                if w_up not in used_codes:
+                    found_codes.append({"detected_phrase": w, "code": w_up})
+                    used_codes.add(w_up)
+                continue
+
+            # Otherwise, try partial search in country names. 
+            # e.g. "canada" => "CA"
+            # This can be improved with fuzzy matching if you like.
+            try:
+                # pycountry doesn't do partial by default. We'll do a simple substring check:
+                for c in pycountry.countries:
+                    # if "CANADA" in "CANADA"? => yes
+                    if w_up in c.name.upper():
+                        iso2 = c.alpha_2.upper()
+                        if iso2 not in used_codes:
+                            found_codes.append({"detected_phrase": w, "code": iso2})
+                            used_codes.add(iso2)
+                        break
+            except:
+                pass
+        
+        return found_codes
+
     def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
-        if DEBUG_MODE:
-            st.write(f"DEBUG => LLMCountryDetector processing text: '{text}'")
-            
+        """Enhanced country detection with better error handling and fallback."""
         if not text.strip():
             return []
 
         try:
-            # Use the new v1.0.0 API format
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -290,36 +348,114 @@ class LLMCountryDetector:
                 temperature=0.0
             )
             
-            # Extract content using the new response format
             raw_content = response.choices[0].message.content.strip()
             
             if DEBUG_MODE:
                 st.write(f"DEBUG => LLM raw response: {raw_content}")
 
-            data = json.loads(raw_content)
-            if not isinstance(data, list):
-                return []
+            # Clean up the response - remove markdown backticks and 'json' tag if present
+            cleaned_content = re.sub(r'^```json\s*|\s*```$', '', raw_content)
             
-            # Filter out invalid objects or duplicates
-            used_codes = set()
-            results = []
-            for item in data:
-                phrase = item.get("detected_phrase", "").strip()
-                code = item.get("code", "")
-                if len(code) == 2 and code.isupper() and phrase:
+            try:
+                data = json.loads(cleaned_content)
+                if not isinstance(data, list):
+                    if DEBUG_MODE:
+                        st.write("DEBUG => JSON response was not a list")
+                    data = []
+                
+                # Filter out invalid entries and deduplicate by code
+                used_codes = set()
+                results = []
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    phrase = item.get("detected_phrase", "").strip()
+                    code = item.get("code", "")
+                    if len(code) == 2 and code.isupper() and phrase:
+                        if code not in used_codes:
+                            results.append({"detected_phrase": phrase, "code": code})
+                            used_codes.add(code)
+                
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => Final detection results: {results}")
+
+                # =========== FALLBACK IF NO RESULTS ===========
+                if not results:
+                    fallback_codes = naive_pycountry_detection(text)
+                    if fallback_codes and DEBUG_MODE:
+                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                    results = fallback_codes
+
+                return results
+
+            except json.JSONDecodeError as e:
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => JSON parse error: {str(e)}")
+                # Try to salvage partial results using regex
+                matches = re.finditer(
+                    r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
+                    cleaned_content
+                )
+                results = []
+                used_codes = set()
+                for match in matches:
+                    phrase, code = match.groups()
                     if code not in used_codes:
                         results.append({"detected_phrase": phrase, "code": code})
                         used_codes.add(code)
-            
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Final detection results: {results}")
+                if results and DEBUG_MODE:
+                    st.write(f"DEBUG => Salvaged {len(results)} results from partial match")
                 
-            return results
-            
+                # If still empty after salvage, do fallback
+                if not results:
+                    fallback_codes = naive_pycountry_detection(text)
+                    if fallback_codes and DEBUG_MODE:
+                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                    results = fallback_codes
+
+                return results
+                
         except Exception as e:
             if DEBUG_MODE:
                 st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
             return []
+
+    def detect_first_country_in_text(self, text: str):
+        all_codes = self.detect_countries_in_text(text)
+        return all_codes[0] if all_codes else None
+
+
+    import pycountry
+
+    def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
+        """
+        Fallback detection if LLM yields no results.
+        We do a naive substring search in pycountry for each token.
+        """
+        words = re.findall(r"[A-Za-z]+", text)
+        found_codes = []
+        used_codes = set()
+
+        for w in words:
+            w_up = w.upper()
+            # Direct alpha-2 code check, e.g. "CN", "US", "CA"
+            exact_country = pycountry.countries.get(alpha_2=w_up)
+            if exact_country:
+                if w_up not in used_codes:
+                    found_codes.append({"detected_phrase": w, "code": w_up})
+                    used_codes.add(w_up)
+                continue
+
+            # Otherwise, check partial in country names
+            for c in pycountry.countries:
+                if w_up in c.name.upper():
+                    iso2 = c.alpha_2.upper()
+                    if iso2 not in used_codes:
+                        found_codes.append({"detected_phrase": w, "code": iso2})
+                        used_codes.add(iso2)
+                    break
+
+        return found_codes
 
     def detect_first_country_in_text(self, text: str):
         all_codes = self.detect_countries_in_text(text)
@@ -1092,71 +1228,170 @@ def save_xml_document(xml_content: str, filename: str, iso_code: str, user_id: s
     return xml_path
 
 def process_docx_with_xml(docx_file, iso_code: str, user_id: str) -> tuple[str, str]:
-    dirs = get_user_specific_directory(user_id)
     """
-    Enhanced DOCX processor that creates XML output with:
+    Enhanced DOCX processor that creates semantic XML output with:
     1. Regular text in <text> tags
-    2. Tables in <table> tags
-    3. Images saved to disk with <image> references
-    Returns: (xml_content, xml_path)
+    2. Tables with preserved structure
+    3. Images with both file path and base64 data for GPT-4V
+    4. Lists and other structured content
     """
     doc = docx.Document(docx_file)
     xml_elements = []
     
-    def process_paragraph(paragraph: Paragraph) -> str:
-        text_content = paragraph.text
-        image_refs = []
-        
-        for run in paragraph.runs:
-            if run._r.drawing_lst:
-                try:
-                    image_data = run._r.drawing_lst[0].xpath('.//a:blip/@r:embed')[0]
-                    image_rel = doc.part.rels[image_data]
-                    image_bytes = image_rel.target_part.blob
-                    
-                    image_path = save_image_to_store(image_bytes, docx_file.name, iso_code, user_id)
-                    
-                    image = Image.open(BytesIO(image_bytes))
-                    image_ref = f"""    <image>
-        <path>{image_path}</path>
-        <format>{image.format}</format>
-        <size>
-            <width>{image.size[0]}</width>
-            <height>{image.size[1]}</height>
-        </size>
-    </image>"""
-                    image_refs.append(image_ref)
-                    
-                except Exception as e:
-                    image_refs.append(f"    <error>Failed to process image: {str(e)}</error>")
-        
-        result = []
-        if text_content.strip():
-            result.append(f"    <text>{text_content}</text>")
-        result.extend(image_refs)
-        return "\n".join(result)
+    def process_table(table: Table) -> str:
+        """
+        Convert the DOCX table into an XML element with <header>, <rows>, etc.
+        Each cell is in <cell> to preserve structure. 
+        """
+        if len(table.rows) == 0:
+            return "<table></table>"
 
-    # Process all elements
+        # Process the first row as 'header'
+        header_cells = []
+        header_row = table.rows[0]
+        for cell in header_row.cells:
+            text_val = (cell.text or "").strip()
+            header_cells.append(f"<cell>{text_val}</cell>")
+
+        header_xml = "<header>\n" + "\n".join(header_cells) + "\n</header>"
+
+        # Process remaining rows
+        rows_xml_list = []
+        for row in table.rows[1:]:
+            row_cells = []
+            for cell in row.cells:
+                text_val = (cell.text or "").strip()
+                # Process any cell content
+                cell_content = process_cell_content(cell)
+                row_cells.append(f"<cell>{cell_content}</cell>")
+            joined_cells = "\n".join(row_cells)
+            row_xml = f"<row>\n{joined_cells}\n</row>"
+            rows_xml_list.append(row_xml)
+
+        rows_joined = "\n".join(rows_xml_list)
+        rows_xml = f"<rows>\n{rows_joined}\n</rows>"
+
+        return f"<table>\n{header_xml}\n{rows_xml}\n</table>"
+
+    def process_cell_content(cell) -> str:
+        """Process cell content, including lists and formatting."""
+        content_parts = []
+        
+        for paragraph in cell.paragraphs:
+            if is_list_paragraph(paragraph):
+                content_parts.append(process_list(paragraph))
+            else:
+                text = paragraph.text.strip()
+                if text:
+                    content_parts.append(process_formatted_text(paragraph))
+        
+        return "\n".join(content_parts)
+
+    def is_list_paragraph(paragraph) -> bool:
+        """Detect if paragraph is part of a list."""
+        return bool(paragraph._element.pPr and paragraph._element.pPr.numPr)
+
+    def process_list(paragraph) -> str:
+        """Convert list item to XML format."""
+        return f"<list-item>{process_formatted_text(paragraph)}</list-item>"
+
+    def process_formatted_text(paragraph) -> str:
+        """Process text with formatting."""
+        formatted_parts = []
+        for run in paragraph.runs:
+            text = run.text.strip()
+            if text:
+                if run.bold:
+                    formatted_parts.append(f"<bold>{text}</bold>")
+                elif run.italic:
+                    formatted_parts.append(f"<italic>{text}</italic>")
+                else:
+                    formatted_parts.append(text)
+        return " ".join(formatted_parts)
+
+    def process_paragraph(paragraph: Paragraph) -> str:
+        """Process regular paragraph."""
+        if is_list_paragraph(paragraph):
+            return process_list(paragraph)
+        
+        text_content = process_formatted_text(paragraph)
+        if text_content.strip():
+            return f"    <text>{text_content}</text>"
+        return ""
+
+    def process_image(run) -> Optional[str]:
+        """Enhanced image processor using utility functions."""
+        try:
+            # Use utility function to process image
+            image_info = process_image_run(run, doc)
+            if "error" in image_info:
+                return f"    <error>Failed to process image: {image_info['error']}</error>"
+                
+            # Save to filesystem
+            image_path = save_image_to_store(
+                image_info["image_bytes"], 
+                docx_file.name, 
+                iso_code, 
+                user_id
+            )
+            
+            # Create XML using both path and base64
+            return f"""    <image>
+            <path>{image_path}</path>
+            <size>
+                <width>{image_info['width']}</width>
+                <height>{image_info['height']}</height>
+            </size>
+            <format>{image_info['format']}</format>
+            <data mime_type="{image_info['mime_type']}">{image_info['base64_data']}</data>
+        </image>"""
+                
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Image processing error: {str(e)}")
+            return f"    <error>Failed to process image: {str(e)}</error>"
+
+    # Main document processing loop
     for element in doc.element.body:
         if isinstance(element, CT_P):
-            text = process_paragraph(Paragraph(element, doc))
-            if text:
-                xml_elements.append(text)
+            # Process paragraph
+            paragraph = Paragraph(element, doc)
+            
+            # First check for images
+            image_found = False
+            for run in paragraph.runs:
+                if run._r.drawing_lst:
+                    image_found = True
+                    image_xml = process_image(run)
+                    if image_xml:
+                        xml_elements.append(image_xml)
+            
+            # If no images, process as text
+            if not image_found:
+                text_xml = process_paragraph(paragraph)
+                if text_xml:
+                    xml_elements.append(text_xml)
+                
         elif isinstance(element, CT_Tbl):
-            table_xml = format_table_as_xml(Table(element, doc))
-            if table_xml:
-                xml_elements.append(table_xml)
+            # Process table
+            table = Table(element, doc)
+            table_xml = process_table(table)
+            xml_elements.append(table_xml)
     
     # Combine all elements
     content = "\n".join(xml_elements)
     
-    # Generate the final XML
+    # Wrap in country tags and save
     xml_content = wrap_text_with_xml(content, iso_code, docx_file.name)
-    
-    # Save the XML and get its path
     xml_path = save_xml_document(xml_content, docx_file.name, iso_code, user_id)
     
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Generated XML path: {xml_path}")
+        if len(content) > 500:
+            st.write(f"DEBUG => First 500 chars of content: {content[:500]}...")
+    
     return xml_content, xml_path
+
 
 def initialize_user_storage():
     if "user_id" not in st.session_state or not st.session_state.user_id:
@@ -1552,139 +1787,171 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
     return coll
 
 
-def add_to_chroma_collection(collection_name: str, chunks: List[Union[str, Dict[str, Any]]], 
-                           xml_paths: List[str], metadatas: Optional[List[dict]] = None):
+
+def add_to_chroma_collection(
+    collection_name: str,
+    chunks: List[Union[str, Dict[str, Any]]],
+    xml_paths: List[str],
+    metadatas: Optional[List[dict]] = None
+):
     if isinstance(chunks[0], dict):
         texts = [chunk["text"] for chunk in chunks]
-        chunk_metadatas = [
-            {
+        chunk_metadatas = []
+        for chunk, xml_path in zip(chunks, xml_paths):
+            # Merge chunk["metadata"], then flatten
+            combined_meta = {
                 **chunk["metadata"],
                 "xml_path": xml_path,
-                "content_type": detect_content_type(chunk["text"])
+                "content_type": detect_content_type(chunk["text"]),
             }
-            for chunk, xml_path in zip(chunks, xml_paths)
-        ]
+            final_meta = flatten_metadata(combined_meta)
+            chunk_metadatas.append(final_meta)
+
     else:
+        # If chunks is a list of strings
         texts = chunks
-        chunk_metadatas = [
-            {
+        chunk_metadatas = []
+        for t, m, xml_path in zip(texts, (metadatas or [{}]*len(texts)), xml_paths):
+            combined_meta = {
                 **(m or {}),
                 "xml_path": xml_path,
-                "content_type": detect_content_type(t)
+                "content_type": detect_content_type(t),
             }
-            for t, m, xml_path in zip(texts, (metadatas or [{}] * len(texts)), xml_paths)
-        ]
-    
+            final_meta = flatten_metadata(combined_meta)
+            chunk_metadatas.append(final_meta)
+
+    # Debug: see exactly what we pass to Chroma
+    for i, meta in enumerate(chunk_metadatas):
+        print(f"add_to_chroma_collection => metadata #{i} = {meta}")
+
     ids = [str(uuid.uuid4()) for _ in chunks]
     coll = create_or_load_collection(collection_name)
+
     coll.add(
         documents=texts,
         metadatas=chunk_metadatas,
         ids=ids
     )
+
     chroma_client.persist()
 
 
 def query_collection(query: str, collection_name: str, n_results: int = 10):
-    """Enhanced country detection with proper ChromaDB querying"""
+    """
+    Enhanced country detection with proper ChromaDB querying.
+    NOW returns: {
+       'covered_countries': { 'CH': [passage1, passage2, ...], 'US': [...], ... },
+       'missing_countries': ['BR', 'CN', ...]
+    }
+    """
+
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
 
+    # 1) Detect countries
     llm_detector = LLMCountryDetector(api_key=st.session_state["api_key"])
     detected_list = llm_detector.detect_countries_in_text(query)
 
-    # Always show country detection results
+    # 2) Logging & user display
     if detected_list:
         country_list = [f"'{item['detected_phrase']}' → {item['code']}" for item in detected_list]
         st.write("🌍 **Countries Detected in Query:**")
         for country in country_list:
             st.write(f"  • {country}")
     else:
-        #if DEBUG_MODE:
         st.write("❌ No country codes detected in query")
 
+    # 3) Create or load your Chroma collection
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
     doc_count = len(coll_info.get("ids", []))
-    
     if DEBUG_MODE:
         st.write(f"DEBUG => Collection '{collection_name}' has doc_count={doc_count}")
 
     if doc_count == 0:
         st.warning("No documents found in collection. Please upload first.")
-        return [], []
-    
-    # Get ISO codes from detected countries
-    iso_codes = [d["code"] for d in detected_list]
+        # Return empty coverage:
+        return {"covered_countries": {}, "missing_countries": []}
 
+    # 4) Prepare structures
+    iso_codes = [d["code"] for d in detected_list]
+    covered_countries = {}
+    missing_countries = []
+    # We'll also union everything for pipeline UI
+    combined_passages = []
+    combined_metadata = []
+    seen_passages = set()
+
+    # 5) If we found any countries, query each one individually
     if iso_codes:
-        # Instead of using $in, we'll query for each country separately and combine results
-        all_passages = []
-        all_metadata = []
-        seen_passages = set()  # To avoid duplicates
-        
         for code in iso_codes:
             results = coll.query(
                 query_texts=[query],
-                where={"country_code": code},  # Simple equality check for each code
+                where={"country_code": code},  # strict equality
                 n_results=n_results
             )
-            
             curr_passages = results.get("documents", [[]])[0]
             curr_metadata = results.get("metadatas", [[]])[0]
-            
-            # Add only non-duplicate passages
-            for p, m in zip(curr_passages, curr_metadata):
-                if p not in seen_passages:
-                    all_passages.append(p)
-                    all_metadata.append(m)
-                    seen_passages.add(p)
-        
-        # If we still need more results
-        if len(all_passages) < n_results:
-            # Get additional results excluding the countries we already queried
+
+            if curr_passages:
+                # We have coverage for this country
+                covered_countries[code] = curr_passages
+
+                # For pipeline visualization, unify them into combined_passages
+                for p, m in zip(curr_passages, curr_metadata):
+                    if p not in seen_passages:
+                        combined_passages.append(p)
+                        combined_metadata.append(m)
+                        seen_passages.add(p)
+            else:
+                # Mark as missing coverage
+                missing_countries.append(code)
+
+        # Optional fallback if you still want more results in total
+        if len(combined_passages) < n_results:
             other_results = coll.query(
                 query_texts=[query],
-                n_results=(n_results - len(all_passages))
+                n_results=(n_results - len(combined_passages))
             )
-            
             other_passages = other_results.get("documents", [[]])[0]
             other_metadata = other_results.get("metadatas", [[]])[0]
-            
-            # Add only non-duplicate passages
+
             for p, m in zip(other_passages, other_metadata):
                 if p not in seen_passages:
-                    all_passages.append(p)
-                    all_metadata.append(m)
+                    combined_passages.append(p)
+                    combined_metadata.append(m)
                     seen_passages.add(p)
     else:
-        # If no countries detected, do a standard search
+        # 6) If no countries detected, do a standard search
         if DEBUG_MODE:
             st.write("DEBUG => Doing standard search with no country filter.")
         results = coll.query(
             query_texts=[query],
             n_results=n_results
         )
-        all_passages = results.get("documents", [[]])[0]
-        all_metadata = results.get("metadatas", [[]])[0]
+        combined_passages = results.get("documents", [[]])[0]
+        combined_metadata = results.get("metadatas", [[]])[0]
 
-    # Update pipeline stage
+    # 7) Update pipeline stage with the combined (union) results for UI
     if DEBUG_MODE:
-        st.write(f"DEBUG => Retrieved {len(all_passages)} passages")
-        
+        st.write(f"DEBUG => Retrieved {len(combined_passages)} passages total")
+
     update_stage('retrieve', {
-        "passages": all_passages or [],
-        "metadata": all_metadata or []
+        "passages": combined_passages or [],
+        "metadata": combined_metadata or []
     })
 
-    if all_passages:
+    if combined_passages:
         # Print which countries appear in the retrieved chunk metadata
-        countries_found = set(meta.get('country_code', 'Unknown') for meta in all_metadata)
+        countries_found = set(meta.get('country_code', 'Unknown') for meta in combined_metadata)
         st.write(f"Total countries in database: {', '.join(countries_found)}")
 
-    return all_passages, all_metadata
-
+    # 8) Return coverage dictionary
+    return {
+        "covered_countries": covered_countries,
+        "missing_countries": missing_countries
+    }
 
 ##############################################################################
 # 7) GPT ANSWER GENERATION
@@ -1692,63 +1959,94 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
 def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
                              system_instruction: str = None):
     """
-    Generates a final GPT answer from the user's query + relevant passages.
-    Here, we label each chunk with 'Country=XX' so the LLM can distinguish them
-    if multiple countries appear in the context.
+    Revised approach that checks coverage by country (via query_collection).
+    If *all* countries are missing, produce CASEB.
+    Otherwise, produce CASEA for covered countries and
+    "No information in my documents." for missing ones.
     """
-    if DEBUG_MODE:
-        st.write(f"DEBUG => generate_answer_with_gpt called with query='{query}', "
-                 f"#passages={len(retrieved_passages)}")
 
     if system_instruction is None:
         system_instruction = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
-    
-    if new_client is None:
-        st.error("OpenAI client not initialized. Provide an API key in the sidebar.")
-        st.stop()
 
-    # Build a labeled context so GPT knows which chunk belongs to which country
-    labeled_chunks = []
-    for passage, meta in zip(retrieved_passages, retrieved_metadata):
-        ccode = meta.get("country_code", "UNKNOWN")
-        # Label each chunk with its country code
-        labeled_text = f"[Country={ccode}]\n{passage}"
-        labeled_chunks.append(labeled_text)
+    # 1) Identify coverage
+    coverage = query_collection(query, "rag_collection", n_results=50)
+    covered = coverage["covered_countries"]
+    missing = coverage["missing_countries"]
 
-    # Join them with spacing
-    labeled_context = "\n\n".join(labeled_chunks)
+    # If all countries are missing => pure CASEB
+    if not covered:
+        # Format a CASEB response directly
+        missing_list = ", ".join(missing) if missing else "unknown"
+        answer = (
+            "# Sorry!\n"
+            "The uploaded document states nothing relevant according to your query...\n\n"
+            "# Best guess\n"
+            f"(We have no doc coverage for: {missing_list})\n"
+            "\n"
+            "# The fun part :-)\n"
+            "_(section requested in Step 0 to show how output can be steered)_\n"
+            "No doc-based info. Here's a playful or sarcastic reflection... 😅\n"
+        )
+        update_stage('generate', {'answer': answer})
+        return answer
 
-    # Construct the final prompt
-    final_prompt = (
-        f"{system_instruction}\n\n"
-        f"Context:\n{labeled_context}\n\n"
-        f"User Query: {query}\nAnswer:"
-    )
+    # 2) Build a doc-based summary for each covered country
+    doc_sections = []
+    for iso_code, passages in covered.items():
+        joined_text = "\n".join(passages)
+        doc_sections.append(f"[Doc Coverage for {iso_code}]\n{joined_text}\n")
+
+    # 3) Add explicit disclaimers for missing countries
+    if missing:
+        # We'll instruct the LLM to say "No information in my documents." for these
+        disclaimers = [f"{iso}: No information in my documents." for iso in missing]
+        doc_sections.append("Missing:\n" + "\n".join(disclaimers))
+
+    # 4) Combine everything into a single system message
+    combined_docs = "\n\n".join(doc_sections)
+    final_system = f"""
+    You are an extremely knowledgeable assistant. The user references multiple countries in their query.
+    You must only use the doc coverage below for the countries we have:
+
+    {combined_docs}
+
+    RULES:
+      - For each missing country, literally say: "No information in my documents."
+      - For covered countries, produce the normal structure CASEA (but don't tell the user this name):
+          1) Instructions to Action
+          2) TL;DR Summary
+          3) Detailed Explanation
+          4) Other References
+
+    If the user only references missing countries, produce structure CASEB (but don't tell the user this name):
+
+    DO NOT guess or provide external info about missing countries.
+    """
+
+    # We'll pass this combined context as the system prompt
+    messages = [
+        {"role": "system", "content": final_system},
+        {"role": "user", "content": query}
+    ]
 
     if DEBUG_MODE:
-        st.write(f"DEBUG => final_prompt length={len(final_prompt)} chars")
+        st.write(f"DEBUG => final prompt length={sum(len(m['content']) for m in messages)} chars")
 
-    # Perform the chat completion
-    completion = new_client.chat.completions.create(
-        model="chatgpt-4o-latest",
-        messages=[{"role": "user", "content": final_prompt}],
-        response_format={"type": "text"}
-    )
-    if completion and completion.choices:
-        answer = completion.choices[0].message.content
-    else:
-        if DEBUG_MODE:
-            st.write("DEBUG => No completion or empty choices; defaulting answer to ''")
-        answer = ""
-        
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Received answer of length={len(answer)}")
+    try:
+        completion = new_client.chat.completions.create(
+            model="chatgpt-4o-latest",  # or whichever model you prefer
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.0
+        )
+        answer = completion.choices[0].message.content if completion.choices else ""
+    except Exception as e:
+        answer = f"Error generating response: {str(e)}"
 
-    # Mark stage=generate in the pipeline
+    # 5) Mark stage=generate
     update_stage('generate', {'answer': answer})
     if DEBUG_MODE:
-        st.write(f"DEBUG => Done generate => st.session_state['generate_data']="
-                 f"{st.session_state.get('generate_data')}")
+        st.write(f"DEBUG => Received final answer of length={len(answer)}")
 
     return answer
 
@@ -1932,9 +2230,8 @@ def create_user_session():
         st.session_state.is_authenticated = False
 
 def get_user_specific_directory(user_id: str) -> dict:
-    """Create unique directories for each user"""
-    hashed_id = hashlib.sha256(user_id.encode()).hexdigest()[:10]
-    base_dir = f"chromadb_storage_user_{hashed_id}"
+    """Create unique directories for each user using a human-readable directory name."""
+    base_dir = f"chromadb_storage_user_{user_id}"
     
     dirs = {
         "base": base_dir,
@@ -1971,44 +2268,29 @@ def verify_login(username, password):
     return username in users and users[username] == password
 
 def delete_user_collections(user_id: str) -> tuple[bool, str]:
-    """
-    Delete all ChromaDB collections for a specific user.
-    
-    Args:
-        user_id: The ID of the user whose collections should be deleted
-        
-    Returns:
-        tuple[bool, str]: Success status and message
-    """
     if not user_id:
         return False, "No user ID provided"
     
     try:
-        # Get user-specific directory
-        user_dir = f"chromadb_storage_user_{user_id}"
+        # Use the hashed directory from get_user_specific_directory
+        dirs = get_user_specific_directory(user_id)
+        user_dir = dirs["chroma"]
         
-        # If the directory doesn't exist, nothing to delete
         if not os.path.exists(user_dir):
             return True, "No collections found for user"
             
-        # Create a new client instance for this user's directory
+        # Use the correct module name: chromadb.Client
         temp_client = chromadb.Client(Settings(
             chroma_db_impl="duckdb+parquet",
             persist_directory=user_dir
         ))
         
-        # Delete all collections for this user
         collections = temp_client.list_collections()
         for collection in collections:
             temp_client.delete_collection(name=collection.name)
-            
-        # Close the client connection
+        
         temp_client.reset()
-        
-        # Remove the directory
         shutil.rmtree(user_dir)
-        
-        # Recreate empty directory
         os.makedirs(user_dir, exist_ok=True)
         
         return True, f"Successfully deleted all collections for user {user_id}"
@@ -2034,8 +2316,11 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
         if image_dir.exists():
             shutil.rmtree(image_dir)
         
-        # 2. Get the ChromaDB collection
-        user_dir = f"chromadb_storage_user_{user_id}"
+        # 2. Get the user-specific directory using get_user_specific_directory
+        dirs = get_user_specific_directory(user_id)
+        user_dir = dirs["chroma"]
+        
+        # 3. Initialize the ChromaDB client using the correct module name
         temp_client = chromadb.Client(Settings(
             chroma_db_impl="duckdb+parquet",
             persist_directory=user_dir
@@ -2046,20 +2331,17 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
             embedding_function=embedding_function_instance
         )
         
-        # 3. Query and delete documents for this country code
+        # 4. Query and delete documents for this country code
         try:
             # Get all documents for this country
             results = collection.get(
                 where={"country_code": iso_code.upper()}
             )
             
-            if results and results['ids']:
+            if results and results.get('ids'):
                 # Delete the documents
-                collection.delete(
-                    ids=results['ids']
-                )
+                collection.delete(ids=results['ids'])
                 temp_client.persist()
-                
                 return True, f"Successfully deleted {len(results['ids'])} documents and associated images for country {iso_code}"
             else:
                 return True, f"No documents found for country {iso_code}"
@@ -2072,7 +2354,7 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
     finally:
         try:
             temp_client.persist()
-        except:
+        except Exception:
             pass
 
 
@@ -2207,99 +2489,205 @@ def chunk_text(text: str) -> List[str]:
     return parts
 
 def parse_xml_for_chunks(text: str) -> List[Dict[str, Any]]:
-    """Parse multiple XML documents into chunks."""
+    """
+    Parse *multiple* XML documents in one string. 
+    We split on '<?xml version="1.0" encoding="UTF-8"?>' and parse each subdoc
+    with parse_single_xml_doc(...). Each subdoc returns a list of chunk dicts.
+    """
     chunks = []
     xml_docs = text.split('<?xml version="1.0" encoding="UTF-8"?>')
     
     for doc in xml_docs:
         if not doc.strip():
             continue
-            
+        
+        # re-add the XML prolog
         doc = '<?xml version="1.0" encoding="UTF-8"?>' + doc
+        
         try:
+            # parse_single_xml_doc returns a list of chunk dicts
             chunk_data = parse_single_xml_doc(doc)
             chunks.extend(chunk_data)
         except Exception as e:
             st.error(f"Error parsing XML document: {e}")
             
+    # update stage for React pipeline
     update_stage("chunk", {
-        "chunks": [f"{c['text'][:200]}..." for c in chunks[:5]],  # Remove metadata display here
+        "chunks": [f"{c['text'][:200]}..." for c in chunks[:5]],  
         "full_chunks": [{
             "text": c["text"],
-            "country": c["metadata"]["country_code"],  # Add country code directly
+            "country": c["metadata"]["country_code"],
             "metadata": c["metadata"]
         } for c in chunks],
         "total_chunks": len(chunks)
     })
     return chunks
 
-def parse_single_xml_doc(xml_text: str) -> List[Dict[str, Any]]:
-    """Process single XML document into chunks."""
+def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict[str, Any]]:
+    """
+    Processes ONE well-formed XML doc string into chunk dicts. 
+    - <text>/<list-item> appended to a text buffer until we reach ~max_chunk_size.
+    - <table> => single chunk in Markdown form.
+    - <image> => single chunk "Image: path (WxH Format)".
+    """
     import xml.etree.ElementTree as ET
     from io import StringIO
 
-    doc_chunks = []
-    root = ET.parse(StringIO(xml_text)).getroot()
-    country_code = root.tag
-    metadata = {child.tag: child.text for child in root.find('metadata')}
-    
-    content = root.find('content')
-    buffer = []
-    buffer_size = 0
-    MAX_SIZE = 1000
+    # parse the XML
+    tree = ET.parse(StringIO(xml_text))
+    root = tree.getroot()  # e.g. <AU> ... or <US> ...
+    country_code = root.tag.upper()
 
-    for element in content:
-        # Handle text elements
-        if element.tag == 'text' and element.text:
-            text = element.text.strip()
-            if buffer_size + len(text) > MAX_SIZE and buffer:
-                doc_chunks.append({
-                    "text": "\n".join(buffer),
-                    "metadata": {**metadata, "country_code": country_code, "content_type": "text"}
-                })
-                buffer = []
-                buffer_size = 0
-            buffer.append(text)
-            buffer_size += len(text)
+    # gather doc-level metadata from <metadata> if it exists
+    meta = {}
+    metadata_elem = root.find('metadata')
+    if metadata_elem is not None:
+        for child in metadata_elem:
+            meta[child.tag] = (child.text or "").strip()
 
-        # Handle tables and images - always create new chunks
-        elif element.tag in ('table', 'image'):
-            if buffer:
-                doc_chunks.append({
-                    "text": "\n".join(buffer),
-                    "metadata": {**metadata, "country_code": country_code, "content_type": "text"}
-                })
-                buffer = []
-                buffer_size = 0
+    content_elem = root.find('content')
+    if content_elem is None:
+        # no content => return empty
+        return []
 
-            if element.tag == 'table':
-                doc_chunks.append({
-                    "text": ET.tostring(element, encoding='unicode'),
-                    "metadata": {**metadata, "country_code": country_code, "content_type": "table"}
-                })
-            else:
-                path = element.find('path').text
-                fmt = element.find('format').text
-                size = element.find('size')
-                dim = f"{size.find('width').text}x{size.find('height').text}"
-                doc_chunks.append({
-                    "text": f"Image: {path} ({dim} {fmt})",
+    # We'll collect final chunk dicts here
+    chunks: List[Dict[str, Any]] = []
+
+    # We'll buffer <text> lines so we can combine smaller items
+    text_buffer: List[str] = []
+    buf_size = 0
+
+    def flush_buffer():
+        """If the buffer has text, create one chunk."""
+        nonlocal text_buffer, buf_size
+        if text_buffer:
+            combined_txt = "\n".join(text_buffer).strip()
+            if combined_txt:
+                chunks.append({
+                    "text": combined_txt,
                     "metadata": {
-                        **metadata, 
-                        "country_code": country_code, 
-                        "content_type": "image",
-                        "image_path": path
+                        **meta,
+                        "country_code": country_code,
+                        "content_type": "text"
                     }
                 })
+        text_buffer = []
+        buf_size = 0
 
-    # Add remaining text buffer
-    if buffer:
-        doc_chunks.append({
-            "text": "\n".join(buffer),
-            "metadata": {**metadata, "country_code": country_code, "content_type": "text"}
-        })
+    # --- NEW STEP: Process direct text within <content> ---
+    if content_elem.text and content_elem.text.strip():
+        direct_text = content_elem.text.strip()
+        text_buffer.append(direct_text)
+        buf_size += len(direct_text)
 
-    return doc_chunks
+    # For each child in <content> (which might be <text>, <list-item>, <table>, <image>, etc.)
+    for element in content_elem:
+        tag_name = element.tag.lower()
+
+        if tag_name in ("text", "list-item"):
+            # Accumulate smaller text items in a buffer,
+            # flush if we exceed max_chunk_size
+            text_val = (element.text or "").strip()
+            if not text_val:
+                continue
+            if (len(text_val) + buf_size) > max_chunk_size:
+                flush_buffer()
+            text_buffer.append(text_val)
+            buf_size += len(text_val)
+
+        elif tag_name == "table":
+            # flush current text buffer
+            flush_buffer()
+            # Convert table to markdown
+            table_md = convert_table_to_markdown(element)
+            chunks.append({
+                "text": table_md,
+                "metadata": {
+                    **meta,
+                    "country_code": country_code,
+                    "content_type": "table"
+                }
+            })
+
+        elif tag_name == "image":
+            # flush text buffer
+            flush_buffer()
+            # Build an "image chunk"
+            path_node = element.find('path')
+            size_node = element.find('size')
+            fmt_node  = element.find('format')
+            if path_node is not None:
+                path = (path_node.text or "").strip()
+            else:
+                path = "[unknown]"
+
+            w, h, fmt = "?", "?", "?"
+            if size_node is not None:
+                w_node = size_node.find('width')
+                h_node = size_node.find('height')
+                w = (w_node.text if w_node is not None else "0")
+                h = (h_node.text if h_node is not None else "0")
+            if fmt_node is not None:
+                fmt = (fmt_node.text or "JPEG")
+
+            image_text = f"Image: {path} ({w}x{h} {fmt})"
+            chunks.append({
+                "text": image_text,
+                "metadata": {
+                    **meta,
+                    "country_code": country_code,
+                    "content_type": "image"
+                }
+            })
+
+        else:
+            # If other tags exist, handle them or ignore them
+            pass
+
+    # at the end, flush leftover buffered text
+    flush_buffer()
+
+    return chunks
+
+def convert_table_to_markdown(table_elem) -> str:
+    """
+    Convert <table><header>...</header><rows>...<row>...<cell>..</cell></row></rows></table>
+    into a simple Markdown table.
+    """
+    header = table_elem.find('header')
+    rows   = table_elem.find('rows')
+
+    if header is None or rows is None:
+        return "[Empty or invalid <table> structure]"
+
+    # gather header cells
+    header_cells = []
+    for c in header.findall('cell'):
+        cell_txt = (c.text or "").strip()
+        header_cells.append(cell_txt if cell_txt else " ")
+
+    # gather rows
+    row_lines = []
+    for row_node in rows.findall('row'):
+        row_cells = []
+        for c in row_node.findall('cell'):
+            txt = (c.text or "").strip()
+            row_cells.append(txt if txt else " ")
+        row_lines.append(row_cells)
+
+    # Build standard markdown
+    md_lines = []
+    # top line: headers
+    md_lines.append(" | ".join(header_cells))
+    # separator
+    md_lines.append("|".join(["-" * max(1,len(h)) for h in header_cells]))
+    # body rows
+    for row_cells in row_lines:
+        md_lines.append(" | ".join(row_cells))
+
+    return "\n".join(md_lines)
+
+# The main parse_xml_for_chunks function remains the same but uses this enhanced version
 
 def wrap_text_with_markers(text: str, iso_code: str) -> str:
     """Wraps text with appropriate markers based on ISO code."""
@@ -2315,7 +2703,103 @@ def validate_iso_code(code: str) -> bool:
     except (AttributeError, KeyError):
         return False
 
+def detect_content_type(text: str) -> str:
+    """
+    Minimal stub that guesses content type based on the chunk text.
+    Adjust the logic to suit your real classification needs.
+    """
+    low = text.strip().lower()
+    # If it starts with "Image:" => it's an image
+    if low.startswith("image:"):
+        return "image"
+    # If it looks like a markdown table => "table"
+    elif " | " in text and "---" in text:
+        return "table"
+    else:
+        # Otherwise assume "text"
+        return "text"
 
+def flatten_metadata(md: dict) -> dict:
+    """
+    Recursively flatten all dict/list fields into strings,
+    so each top-level key is str->(str,int,float).
+    If any value is still not a simple scalar, we convert it via JSON or str().
+    """
+    flat = {}
+
+    def _recurse(prefix: str, val: Any):
+        if isinstance(val, dict):
+            for k,v in val.items():
+                new_key = f"{prefix}.{k}" if prefix else k
+                _recurse(new_key, v)
+        elif isinstance(val, list):
+            # convert entire list to JSON string
+            flat[prefix] = json.dumps(val)
+        else:
+            # If it's int or float or str, keep it. Otherwise, str() it
+            if isinstance(val, (int,float,str)):
+                flat[prefix] = val
+            else:
+                flat[prefix] = str(val)
+
+    # top-level
+    _recurse("", md)
+    return flat
+
+def image_to_base64(image_bytes: bytes) -> str:
+    """Convert image bytes to base64 string."""
+    return base64.b64encode(image_bytes).decode('utf-8')
+
+def get_image_mime_type(format: str) -> str:
+    """Get MIME type from image format."""
+    format = format.lower()
+    mime_types = {
+        'jpeg': 'image/jpeg',
+        'jpg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif',
+        'bmp': 'image/bmp',
+        'webp': 'image/webp'
+    }
+    return mime_types.get(format, 'application/octet-stream')
+
+def process_image_run(run, doc) -> Dict[str, Any]:
+    """Process an image run from a DOCX file, returning both path and base64."""
+    try:
+        image_data = run._r.drawing_lst[0].xpath('.//a:blip/@r:embed')[0]
+        image_rel = doc.part.rels[image_data]
+        image_bytes = image_rel.target_part.blob
+        
+        # Get image details
+        image = Image.open(BytesIO(image_bytes))
+        format = image.format.lower()
+        
+        # Convert to base64
+        base64_data = image_to_base64(image_bytes)
+        mime_type = get_image_mime_type(format)
+        
+        return {
+            "width": image.size[0],
+            "height": image.size[1],
+            "format": format,
+            "mime_type": mime_type,
+            "base64_data": base64_data,
+            "image_bytes": image_bytes  # Keep original bytes for saving
+        }
+    except Exception as e:
+        return {
+            "error": str(e)
+        }
+
+def create_image_chunk(image_info: Dict[str, Any], saved_path: str) -> Dict[str, str]:
+    """Create a chunk that includes both path reference and base64 data."""
+    return {
+        "text": (
+            f"Image: {saved_path} ({image_info['width']}x{image_info['height']} {image_info['format'].upper()})\n"
+            f"<image_data mime_type='{image_info['mime_type']}' base64='{image_info['base64_data']}' />"
+        ),
+        "type": "image"
+    }
 
 ##############################################################################
 # 10) MAIN STREAMLIT APP
@@ -2682,7 +3166,7 @@ def main():
         if st.button("Run Step 2: Chunk Context"):
             if st.session_state.uploaded_text:
                 # Debug: Show first 500 chars of XML
-                st.code(st.session_state.uploaded_text[:500], language='xml')
+                st.code(st.session_state.uploaded_text[:3500], language='xml')
                 
                 try:
                     chunks = parse_xml_for_chunks(st.session_state.uploaded_text)
