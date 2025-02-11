@@ -236,105 +236,57 @@ import openai
 
 class LLMCountryDetector:
     SYSTEM_PROMPT = """
-        You are a specialized assistant for extracting explicit or implicit
-        references to countries in ANY user text. You must detect:
+        You are a specialized assistant for extracting ALL country references in ANY user text. 
+        You must detect and extract EVERY single country reference, including:
 
-        1. FULL NAMES (highest priority):
-           - "Switzerland", "United States", "United States of America", "Canada", "China"
-           - "America", "The United States", "USA", "CN" (for China)
-           
-        2. Historical/Alternative Names:
-           - "Helvetia", "Swiss", "Schweiz" => "CH"
-           - "US", "American", "the States" => "US"
-           - "Chinese", "PRC" => "CN"
-           - "Canadian" => "CA"
-           
-        3. Contextual References:
-           - "Swiss law", "Swiss banking" => "CH"
-           - "US right", "American system" => "US"
-           - "Federal law" (in US context) => "US"
-           - "Canadian law", "Canadian system" => "CA"
-           - "Chinese regulations" => "CN"
+        1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
+           - Extract all 2-letter codes like "CH", "US", "CN", "DE", etc.
+           - These MUST be extracted even when standalone
+           - Never skip any 2-letter country code
+           - Example: "DE vs CH" MUST return both codes
 
-        IMPORTANT: You MUST detect full country names like "Switzerland" or 
-        "United States" even when they appear alone without context.
-        
-        Examples of what you MUST detect:
-        Input: "Switzerland has strict laws"
-        Output: [{"detected_phrase": "Switzerland", "code": "CH"}]
-        
-        Input: "United States regulations"
-        Output: [{"detected_phrase": "United States", "code": "US"}]
-        
-        Input: "Switzerland or United States?"
-        Output: [
-            {"detected_phrase": "Switzerland", "code": "CH"},
-            {"detected_phrase": "United States", "code": "US"}
+        2. FULL NAMES:
+           - "Switzerland", "United States", "China", "Germany", etc.
+           - "Swiss", "American", "Chinese", "German" (adjective form)
+           
+        3. COMMON ABBREVIATIONS:
+           - "USA" => "US"
+           - "PRC" => "CN"
+           - "BRD" => "DE"
+           
+        4. CONTEXTUAL REFERENCES:
+           - "Swiss law" => "CH"
+           - "German regulations" => "DE"
+           - "Chinese market" => "CN"
+
+        EXTREMELY IMPORTANT:
+        - You MUST catch ALL country codes (DE, CH, US, etc.)
+        - Never skip any valid 2-letter code
+        - If in doubt, include it
+        - Process the ENTIRE text, not just the beginning
+
+        Output format must be EXACT JSON:
+        [
+            {"detected_phrase": "exact text found", "code": "XX"}
         ]
 
-        Input: "Canada or CN or China"
+        Examples of MANDATORY detection:
+        Input: "DE vs CH vs CN"
         Output: [
-            {"detected_phrase": "Canada", "code": "CA"},
-            {"detected_phrase": "CN", "code": "CN"},
-            {"detected_phrase": "China", "code": "CN"}
+            {"detected_phrase": "DE", "code": "DE"},
+            {"detected_phrase": "CH", "code": "CH"},
+            {"detected_phrase": "CN", "code": "CN"}
         ]
 
-        You must output a JSON array of objects with:
-           { "detected_phrase": "exact text from input", "code": "XX" }
-        
-        - "code" must be the ISO alpha-2 code in uppercase (2 letters)
-        - "detected_phrase" must be the exact snippet from input
-        - If no countries found, output []
-        
-        Output ONLY valid JSON, no extra text.
+        Output ONLY valid JSON. No extra text.
     """.strip()
 
-    def __init__(self, api_key: str, model: str = "chatgpt-4o-latest"):
+    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
-        """
-        If the LLM detection fails, we do a quick fallback:
-        1) Search for an exact or partial match using pycountry.
-        2) Return a list of { "detected_phrase": <str>, "code": <ISO2> }.
-        """
-        # We'll split on spaces/punctuation & do a simple search.
-        words = re.findall(r"[A-Za-z]+", text)
-        found_codes = []
-        used_codes = set()
-
-        # Example approach: for each word, see if it matches or partly matches a country name or alpha_2 code
-        for w in words:
-            w_up = w.upper()
-            # If "CN", "US", "CA", etc. is typed
-            exact_country = pycountry.countries.get(alpha_2=w_up)
-            if exact_country:
-                if w_up not in used_codes:
-                    found_codes.append({"detected_phrase": w, "code": w_up})
-                    used_codes.add(w_up)
-                continue
-
-            # Otherwise, try partial search in country names. 
-            # e.g. "canada" => "CA"
-            # This can be improved with fuzzy matching if you like.
-            try:
-                # pycountry doesn't do partial by default. We'll do a simple substring check:
-                for c in pycountry.countries:
-                    # if "CANADA" in "CANADA"? => yes
-                    if w_up in c.name.upper():
-                        iso2 = c.alpha_2.upper()
-                        if iso2 not in used_codes:
-                            found_codes.append({"detected_phrase": w, "code": iso2})
-                            used_codes.add(iso2)
-                        break
-            except:
-                pass
-        
-        return found_codes
-
     def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
-        """Enhanced country detection with better error handling and fallback."""
+        """Enhanced country detection with better validation."""
         if not text.strip():
             return []
 
@@ -353,7 +305,7 @@ class LLMCountryDetector:
             if DEBUG_MODE:
                 st.write(f"DEBUG => LLM raw response: {raw_content}")
 
-            # Clean up the response - remove markdown backticks and 'json' tag if present
+            # Clean up response
             cleaned_content = re.sub(r'^```json\s*|\s*```$', '', raw_content)
             
             try:
@@ -363,7 +315,7 @@ class LLMCountryDetector:
                         st.write("DEBUG => JSON response was not a list")
                     data = []
                 
-                # Filter out invalid entries and deduplicate by code
+                # Validate and deduplicate by code
                 used_codes = set()
                 results = []
                 for item in data:
@@ -377,11 +329,11 @@ class LLMCountryDetector:
                             used_codes.add(code)
                 
                 if DEBUG_MODE:
-                    st.write(f"DEBUG => Final detection results: {results}")
+                    st.write(f"DEBUG => Detected countries: {results}")
 
-                # =========== FALLBACK IF NO RESULTS ===========
+                # If no results, try fallback
                 if not results:
-                    fallback_codes = naive_pycountry_detection(text)
+                    fallback_codes = self.naive_pycountry_detection(text)
                     if fallback_codes and DEBUG_MODE:
                         st.write(f"DEBUG => Fallback detection => {fallback_codes}")
                     results = fallback_codes
@@ -391,7 +343,7 @@ class LLMCountryDetector:
             except json.JSONDecodeError as e:
                 if DEBUG_MODE:
                     st.write(f"DEBUG => JSON parse error: {str(e)}")
-                # Try to salvage partial results using regex
+                # Try regex fallback
                 matches = re.finditer(
                     r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
                     cleaned_content
@@ -403,12 +355,13 @@ class LLMCountryDetector:
                     if code not in used_codes:
                         results.append({"detected_phrase": phrase, "code": code})
                         used_codes.add(code)
-                if results and DEBUG_MODE:
-                    st.write(f"DEBUG => Salvaged {len(results)} results from partial match")
                 
-                # If still empty after salvage, do fallback
+                if results and DEBUG_MODE:
+                    st.write(f"DEBUG => Recovered {len(results)} results from regex")
+                
+                # If still empty, do fallback
                 if not results:
-                    fallback_codes = naive_pycountry_detection(text)
+                    fallback_codes = self.naive_pycountry_detection(text)
                     if fallback_codes and DEBUG_MODE:
                         st.write(f"DEBUG => Fallback detection => {fallback_codes}")
                     results = fallback_codes
@@ -418,48 +371,51 @@ class LLMCountryDetector:
         except Exception as e:
             if DEBUG_MODE:
                 st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
-            return []
+            return self.naive_pycountry_detection(text)
 
-    def detect_first_country_in_text(self, text: str):
-        all_codes = self.detect_countries_in_text(text)
-        return all_codes[0] if all_codes else None
-
-
-    import pycountry
-
+    @staticmethod
     def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
         """
-        Fallback detection if LLM yields no results.
-        We do a naive substring search in pycountry for each token.
+        Enhanced fallback detection that prioritizes finding ALL country codes.
         """
-        words = re.findall(r"[A-Za-z]+", text)
         found_codes = []
         used_codes = set()
 
+        # First pass: Look specifically for 2-letter codes
+        words = re.findall(r'\b[A-Za-z]{2}\b', text)
         for w in words:
             w_up = w.upper()
-            # Direct alpha-2 code check, e.g. "CN", "US", "CA"
-            exact_country = pycountry.countries.get(alpha_2=w_up)
-            if exact_country:
+            country = pycountry.countries.get(alpha_2=w_up)
+            if country:
                 if w_up not in used_codes:
                     found_codes.append({"detected_phrase": w, "code": w_up})
                     used_codes.add(w_up)
-                continue
 
-            # Otherwise, check partial in country names
-            for c in pycountry.countries:
-                if w_up in c.name.upper():
-                    iso2 = c.alpha_2.upper()
-                    if iso2 not in used_codes:
-                        found_codes.append({"detected_phrase": w, "code": iso2})
-                        used_codes.add(iso2)
-                    break
+        # Second pass: Look for country names
+        words = re.findall(r'\b[A-Za-z]+\b', text)
+        for w in words:
+            w_up = w.upper()
+            # Skip if it's already a known code
+            if w_up in used_codes:
+                continue
+            try:
+                # Try to find matching country
+                for c in pycountry.countries:
+                    if w_up in c.name.upper():
+                        iso2 = c.alpha_2
+                        if iso2 not in used_codes:
+                            found_codes.append({"detected_phrase": w, "code": iso2})
+                            used_codes.add(iso2)
+                        break
+            except:
+                pass
 
         return found_codes
 
     def detect_first_country_in_text(self, text: str):
         all_codes = self.detect_countries_in_text(text)
         return all_codes[0] if all_codes else None
+
 
 ##############################################################################
 # 2) SESSION STATE INIT
@@ -1920,7 +1876,7 @@ def extract_image_data(text: str) -> Optional[Dict[str, str]]:
     return None
 
 def query_collection(query: str, collection_name: str, n_results: int = 10):
-    """Enhanced query function that returns data in correct format."""
+    """Enhanced query function with consistent multi-country retrieval."""
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
 
@@ -1940,57 +1896,91 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
     # 3) Create or load Chroma collection
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
-    coll_info = coll.get()
-    doc_count = len(coll_info.get("ids", []))
+    
+    # Get all documents to check available countries
+    all_docs = coll.get()
+    available_countries = set()
+    for metadata in all_docs.get("metadatas", []):
+        if metadata and "country_code" in metadata:
+            available_countries.add(metadata["country_code"])
+    
     if DEBUG_MODE:
-        st.write(f"DEBUG => Collection '{collection_name}' has doc_count={doc_count}")
+        st.write(f"DEBUG => Available countries in database: {available_countries}")
+        st.write(f"DEBUG => Total documents: {len(all_docs.get('ids', []))}")
 
-    if doc_count == 0:
+    if len(all_docs.get('ids', [])) == 0:
         st.warning("No documents found in collection. Please upload first.")
-        return {"covered_countries": {}, "missing_countries": []}
+        return [], []
 
-    # 4) Initialize structures
-    iso_codes = [d["code"] for d in detected_list]
-    covered_countries = {}
-    missing_countries = []
+    # 4) Initialize results
     combined_passages = []
     combined_metadata = []
     seen_passages = set()
+    iso_codes = [d["code"] for d in detected_list]
 
-    # 5) Query for each country
+    # 5) Query for each country with retries
     if iso_codes:
         for code in iso_codes:
             if DEBUG_MODE:
-                st.write(f"DEBUG => Querying for country code: {code}")
-            
-            results = coll.query(
-                query_texts=[query],
-                where={"country_code": code},
-                n_results=n_results
-            )
-            
-            curr_passages = results.get("documents", [[]])[0]
-            curr_metadata = results.get("metadatas", [[]])[0]
+                st.write(f"DEBUG => Querying for country {code}")
+                if code in available_countries:
+                    st.write(f"DEBUG => Country {code} is available in database")
+                else:
+                    st.write(f"DEBUG => Country {code} not found in database")
 
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Found {len(curr_passages)} passages for {code}")
-                if curr_metadata:
-                    st.write(f"DEBUG => First metadata keys: {list(curr_metadata[0].keys())}")
+            # Try different query approaches
+            for attempt in range(3):  # Try up to 3 different query strategies
+                if attempt == 0:
+                    # First attempt: Exact match on country_code
+                    results = coll.query(
+                        query_texts=[query],
+                        where={"country_code": code},
+                        n_results=n_results
+                    )
+                elif attempt == 1:
+                    # Second attempt: Broader semantic search for the country
+                    country_query = f"information about {code} regulations"
+                    results = coll.query(
+                        query_texts=[country_query],
+                        where={"country_code": code},
+                        n_results=n_results
+                    )
+                else:
+                    # Final attempt: Just get all documents for this country
+                    try:
+                        results = coll.get(
+                            where={"country_code": code}
+                        )
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => Error in final attempt for {code}: {str(e)}")
+                        continue
 
+                curr_passages = results.get("documents", [[]])[0] if attempt < 2 else results.get("documents", [])
+                curr_metadata = results.get("metadatas", [[]])[0] if attempt < 2 else results.get("metadatas", [])
+
+                if curr_passages:
+                    if DEBUG_MODE:
+                        st.write(f"DEBUG => Found {len(curr_passages)} passages for {code} on attempt {attempt + 1}")
+                    break
+                elif DEBUG_MODE:
+                    st.write(f"DEBUG => No results for {code} on attempt {attempt + 1}")
+
+            # Process results
             if curr_passages:
-                covered_countries[code] = curr_passages
                 for p, m in zip(curr_passages, curr_metadata):
-                    if p not in seen_passages:
+                    passage_key = f"{code}:{p}"  # Include country in key to allow same passage for different countries
+                    if passage_key not in seen_passages:
                         combined_passages.append(p)
                         combined_metadata.append(m)
-                        seen_passages.add(p)
-            else:
-                missing_countries.append(code)
+                        seen_passages.add(passage_key)
+            elif DEBUG_MODE:
+                st.write(f"DEBUG => No results found for {code} after all attempts")
 
     else:
         # Standard search if no countries detected
         if DEBUG_MODE:
-            st.write("DEBUG => Doing standard search with no country filter.")
+            st.write("DEBUG => Doing standard search with no country filter")
         results = coll.query(
             query_texts=[query],
             n_results=n_results
@@ -1998,13 +1988,17 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
         combined_passages = results.get("documents", [[]])[0]
         combined_metadata = results.get("metadatas", [[]])[0]
 
+    # 6) Final verification
     if DEBUG_MODE:
         st.write(f"DEBUG => Final combined passages: {len(combined_passages)}")
         st.write(f"DEBUG => Final combined metadata: {len(combined_metadata)}")
-        if combined_metadata:
-            st.write(f"DEBUG => Metadata sample keys: {list(combined_metadata[0].keys())}")
+        retrieved_countries = set(m.get('country_code', '') for m in combined_metadata)
+        st.write(f"DEBUG => Retrieved data for countries: {retrieved_countries}")
+        missing = set(iso_codes) - retrieved_countries
+        if missing:
+            st.write(f"DEBUG => Missing data for requested countries: {missing}")
 
-    # Update pipeline stage with combined results
+    # 7) Update pipeline stage
     update_stage('retrieve', {
         "passages": combined_passages,
         "metadata": combined_metadata
@@ -2012,8 +2006,10 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
 
     # Print found countries
     if combined_metadata:
-        countries_found = set(meta.get('country_code', 'Unknown') for meta in combined_metadata)
-        st.write(f"Total countries in database: {', '.join(countries_found)}")
+        countries_found = set(meta.get('country_code', 'Unknown') 
+                            for meta in combined_metadata 
+                            if meta.get('country_code'))
+        st.write(f"..of which we have data in our database for: {', '.join(countries_found)}")
 
     return combined_passages, combined_metadata
 
@@ -2050,23 +2046,9 @@ def process_image_run(run, doc) -> Dict[str, Any]:
             st.write(f"DEBUG => Image processing error: {str(e)}")
         return {"error": str(e)}
 
-def create_image_chunk(image_info: Dict[str, Any], saved_path: str) -> Dict[str, str]:
-    """Create a chunk that includes both path reference and base64 data."""
-    return {
-        "text": (
-            f"Image: {saved_path} ({image_info['width']}x{image_info['height']} {image_info['format'].upper()})\n"
-            f"<image_data mime_type='{image_info['mime_type']}' base64='{image_info['base64_data']}' />"
-        ),
-        "metadata": {
-            "content_type": "image",
-            "mime_type": image_info['mime_type'],
-            "dimensions": f"{image_info['width']}x{image_info['height']}"
-        }
-    }
-
 def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dict],
                            system_instruction: str = None):
-    """Generate answer with proper query result handling."""
+    """Generate answer with balanced temperature for better information correlation."""
     if not st.session_state.get("api_key"):
         st.error("OpenAI API key not set.")
         st.stop()
@@ -2075,14 +2057,21 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
         st.write(f"DEBUG => Starting answer generation")
         st.write(f"DEBUG => Received {len(passages)} passages and {len(metadata)} metadata entries")
 
+    # First detect countries in the query
+    llm_detector = LLMCountryDetector(api_key=st.session_state["api_key"])
+    detected_countries = llm_detector.detect_countries_in_text(query)
+    detected_codes = [d["code"] for d in detected_countries]
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Detected country codes in query: {detected_codes}")
+
     # Group passages and metadata by country code
     country_data = {}
-    missing_countries = []
-
+    
     # Process passages and their metadata together
     for passage, meta in zip(passages, metadata):
         country_code = meta.get('country_code')
-        if country_code:
+        if country_code and country_code in detected_codes:
             if country_code not in country_data:
                 country_data[country_code] = {
                     'passages': [],
@@ -2092,12 +2081,31 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
             country_data[country_code]['metadata'].append(meta)
 
     if DEBUG_MODE:
-        st.write(f"DEBUG => Grouped data by countries: {list(country_data.keys())}")
+        st.write(f"DEBUG => Found data for countries: {list(country_data.keys())}")
+        st.write(f"DEBUG => Data points per country: {[(k, len(v['passages'])) for k,v in country_data.items()]}")
 
     # Initialize messages array
     messages = []
-    if system_instruction:
-        messages.append({"role": "system", "content": system_instruction})
+    
+    # Create a balanced system message that encourages finding information
+    base_instruction = system_instruction or ""
+    balanced_instruction = f"""
+    {base_instruction}
+
+    INSTRUCTIONS:
+    1. The user's query mentions these countries: {', '.join(detected_codes)}
+    2. Focus on finding relevant information for these countries.
+    3. Look for both direct and indirect mentions of regulations or requirements.
+    4. If information seems relevant but not explicit, clearly mark it as "Based on available data:".
+    5. For each country, try to provide:
+       - Direct quotes or references if available
+       - Related context that might help understand the regulations
+       - Any caveats or important notes
+    6. Only state "No information in my documents" if you truly find nothing relevant.
+
+    Remember: Analyze the provided documents thoroughly before concluding no information exists.
+    """
+    messages.append({"role": "system", "content": balanced_instruction})
 
     # Process each country's data
     for iso_code, data in country_data.items():
@@ -2106,16 +2114,15 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
         
         if DEBUG_MODE:
             st.write(f"DEBUG => Processing {len(country_passages)} passages for {iso_code}")
+            passage_types = [m.get('content_type', 'unknown') for m in country_metadata]
+            st.write(f"DEBUG => Content types for {iso_code}: {passage_types}")
         
         for passage, meta in zip(country_passages, country_metadata):
-            # Check if this is an image by looking at the metadata
             is_image = meta.get('content_type') == 'image'
             
             if is_image:
-                # Get the full image chunk from metadata
                 full_chunk = meta.get('full_image_chunk', '')
                 if full_chunk:
-                    # Extract base64 and mime_type
                     base64_match = re.search(r"base64=['\"]([^'\"]+)['\"]", full_chunk)
                     mime_match = re.search(r"mime_type=['\"]([^'\"]+)['\"]", full_chunk)
                     
@@ -2127,15 +2134,13 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
                             if DEBUG_MODE:
                                 st.write(f"DEBUG => Processing image from {iso_code}")
                                 st.write(f"DEBUG => Base64 length: {len(base64_data)}")
-                                st.write(f"DEBUG => MIME type: {mime_type}")
                             
-                            # Create message exactly as per OpenAI docs
                             messages.append({
                                 "role": "user",
                                 "content": [
                                     {
                                         "type": "text",
-                                        "text": f"Analyze this document image from {iso_code}. Please extract and read all text visible in the image, especially any information about age restrictions or regulations:"
+                                        "text": f"Analyze this document image from {iso_code}. Extract any text about regulations, age restrictions, or requirements:"
                                     },
                                     {
                                         "type": "image_url",
@@ -2146,14 +2151,7 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
                                     }
                                 ]
                             })
-                        else:
-                            if DEBUG_MODE:
-                                st.write(f"DEBUG => Empty base64 data for image")
-                    else:
-                        if DEBUG_MODE:
-                            st.write(f"DEBUG => No base64/mime data found in chunk")
             else:
-                # Regular text passage
                 messages.append({
                     "role": "user",
                     "content": [
@@ -2164,48 +2162,64 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
                     ]
                 })
 
-    # Add the user's query
+    # Add specific query guidance
     messages.append({
         "role": "user",
         "content": [
             {
                 "type": "text",
-                "text": query
+                "text": f"""
+Please analyze the documents and answer this query: {query}
+
+For each country mentioned ({', '.join(detected_codes)}):
+1. Look for both explicit and implicit information
+2. Consider both direct statements and contextual clues
+3. If you find partial information, share it but mark it clearly
+4. Only say "no information" if you truly find nothing relevant
+"""
             }
         ]
     })
 
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Total messages: {len(messages)}")
-        for idx, msg in enumerate(messages):
-            st.write(f"DEBUG => Message {idx} role: {msg['role']}")
-            if isinstance(msg['content'], list):
-                for part in msg['content']:
-                    if part['type'] == 'image_url':
-                        st.write(f"DEBUG => Contains image_url with detail={part['image_url'].get('detail')}")
-                        st.write(f"DEBUG => URL prefix: {part['image_url']['url'][:30]}...")
-                    else:
-                        st.write(f"DEBUG => Contains text: {part['text'][:100]}...")
-
     try:
-        if DEBUG_MODE:
-            st.write("DEBUG => Calling OpenAI API...")
-            
+        # Use higher temperature for initial response
         completion = new_client.chat.completions.create(
-            model="gpt-4o",  # Current supported model
+            model="gpt-4o",
             messages=messages,
             max_tokens=4096,
-            temperature=0.0
+            temperature=0.4  # Increased temperature for better information correlation
         )
         answer = completion.choices[0].message.content if completion.choices else ""
         
+        # Verify no unauthorized countries are mentioned
+        answer_countries = llm_detector.detect_countries_in_text(answer)
+        answer_codes = [c["code"] for c in answer_countries]
+        unexpected_codes = [c for c in answer_codes if c not in detected_codes]
+        
+        if unexpected_codes:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Found unexpected countries: {unexpected_codes}")
+            # Regenerate with stricter control but maintain temperature
+            strict_prompt = f"""
+            Your previous answer mentioned unauthorized countries: {unexpected_codes}
+            Please revise to discuss ONLY these countries: {detected_codes}
+            Maintain all relevant information but remove references to other countries.
+            """
+            messages.append({"role": "user", "content": strict_prompt})
+            completion = new_client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                max_tokens=4096,
+                temperature=0.3  # Slightly lower for correction but still flexible
+            )
+            answer = completion.choices[0].message.content if completion.choices else ""
+            
         if DEBUG_MODE:
-            st.write(f"DEBUG => Answer received, length: {len(answer)}")
+            st.write(f"DEBUG => Answer length: {len(answer)}")
             
     except Exception as e:
         if DEBUG_MODE:
             st.write(f"DEBUG => API Error: {str(e)}")
-            st.write(f"DEBUG => Error type: {type(e)}")
         answer = f"Error generating response: {str(e)}"
 
     update_stage('generate', {'answer': answer})
