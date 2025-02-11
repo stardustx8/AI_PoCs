@@ -9,7 +9,7 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = True  # Set to True to enable debug prints
+DEBUG_MODE = False  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
@@ -289,7 +289,7 @@ class LLMCountryDetector:
         Output ONLY valid JSON, no extra text.
     """.strip()
 
-    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: str, model: str = "chatgpt-4o-latest"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
@@ -1105,42 +1105,70 @@ def embed_text(
     update_stage_flag=True,
     return_data=False
 ):
+    """Modified embedding function that handles image chunks properly."""
     if not st.session_state.get("api_key"):
         st.error("OpenAI API key not set.")
         st.stop()
-        
-    processed_texts = [chunk["text"] if isinstance(chunk, dict) else chunk for chunk in texts]
-    safe_texts = [sanitize_text(s) for s in processed_texts]
     
-    response = new_client.embeddings.create(input=safe_texts, model=openai_embedding_model)
+    # Process each text/chunk to extract embedable content
+    processed_texts = []
+    original_chunks = []
+    
+    for chunk in texts:
+        if isinstance(chunk, dict):
+            text = chunk["text"]
+            original_chunks.append(chunk)
+        else:
+            text = chunk
+            original_chunks.append({"text": text})
+            
+        # If it's an image chunk, only embed the path and metadata, not the base64 data
+        if "<image_data" in text:
+            # Extract just the image path and format part
+            path_match = re.match(r"Image: ([^\n]+)", text)
+            if path_match:
+                embedable_text = path_match.group(0)  # Just use "Image: path (WxH format)"
+            else:
+                embedable_text = "Image chunk"  # Fallback
+        else:
+            embedable_text = text
+            
+        processed_texts.append(sanitize_text(embedable_text))
+    
+    # Generate embeddings for the processed texts
+    response = new_client.embeddings.create(
+        input=processed_texts,
+        model=openai_embedding_model
+    )
     embeddings = [item.embedding for item in response.data]
     
-    # Limit token breakdowns to first 2 chunks only
+    # Create token breakdowns for the first 2 chunks only
     token_breakdowns = []
-    for text, embedding in zip(safe_texts[:2], embeddings[:2]):  # Only first 2 chunks
-        # Take first 5 words for token breakdown
-        tokens = text.split()[:5]  # Only first 5 words
+    for text, embedding in zip(processed_texts[:2], embeddings[:2]):
+        tokens = text.split()[:5]  # First 5 words only
         breakdown = []
         if tokens:
             segment_size = len(embedding) // len(tokens)
             for i, tok in enumerate(tokens):
                 start = i * segment_size
                 end = start + segment_size
-                # Show only first 3 dimensions of each token's vector
-                snippet = embedding[start:min(end, len(embedding))][:3]  # Only first 3 dimensions
-                # Round the numbers to 4 decimal places
+                snippet = embedding[start:min(end, len(embedding))][:3]
                 snippet = [round(x, 4) for x in snippet]
                 breakdown.append({"token": tok, "vector_snippet": snippet})
         token_breakdowns.append(breakdown)
     
     embedding_data = {
-        "embeddings": embeddings,  # Keep full embeddings
+        "embeddings": embeddings,
         "dimensions": len(embeddings[0]) if embeddings else 0,
-        "preview": [round(x, 4) for x in embeddings[0][:5]] if embeddings else [],  # Show only first 5 dimensions
+        "preview": [round(x, 4) for x in embeddings[0][:5]] if embeddings else [],
         "total_vectors": len(embeddings),
         "token_breakdowns": token_breakdowns,
         "preview_note": "(Showing first 2 chunks, 5 words each, 3 dimensions per word)"
     }
+    
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Embedding data generated for {len(processed_texts)} chunks")
+        st.write(f"DEBUG => First processed text: {processed_texts[0][:200]}")
     
     if update_stage_flag:
         update_stage('embed', embedding_data)
@@ -1336,6 +1364,7 @@ def process_docx_with_xml(docx_file, iso_code: str, user_id: str) -> tuple[str, 
             )
             
             # Create XML using both path and base64
+            # IMPORTANT: Changed to use base64 as an attribute to match parser expectations
             return f"""    <image>
             <path>{image_path}</path>
             <size>
@@ -1343,7 +1372,7 @@ def process_docx_with_xml(docx_file, iso_code: str, user_id: str) -> tuple[str, 
                 <height>{image_info['height']}</height>
             </size>
             <format>{image_info['format']}</format>
-            <data mime_type="{image_info['mime_type']}">{image_info['base64_data']}</data>
+            <image_data mime_type="{image_info['mime_type']}" base64="{image_info['base64_data']}" />
         </image>"""
                 
         except Exception as e:
@@ -1794,57 +1823,104 @@ def add_to_chroma_collection(
     xml_paths: List[str],
     metadatas: Optional[List[dict]] = None
 ):
-    if isinstance(chunks[0], dict):
-        texts = [chunk["text"] for chunk in chunks]
-        chunk_metadatas = []
-        for chunk, xml_path in zip(chunks, xml_paths):
-            # Merge chunk["metadata"], then flatten
-            combined_meta = {
-                **chunk["metadata"],
-                "xml_path": xml_path,
-                "content_type": detect_content_type(chunk["text"]),
-            }
-            final_meta = flatten_metadata(combined_meta)
-            chunk_metadatas.append(final_meta)
+    """Enhanced storage function with proper embedding handling."""
+    if DEBUG_MODE:
+        st.write("DEBUG => Starting Chroma storage process")
+    
+    # Process chunks to create proper documents and metadata
+    texts = []
+    chunk_metadatas = []
+    
+    for chunk, xml_path in zip(chunks, xml_paths):
+        if isinstance(chunk, dict):
+            text = chunk["text"]
+            chunk_meta = chunk.get("metadata", {})
+        else:
+            text = chunk
+            chunk_meta = {}
+            
+        # For image chunks, store only the path part in the embeddings
+        if "<image_data" in text:
+            path_match = re.match(r"Image: ([^\n]+)", text)
+            embedable_text = path_match.group(0) if path_match else "Image chunk"
+            # Store the full chunk text (including base64) in metadata
+            chunk_meta["full_image_chunk"] = text
+        else:
+            embedable_text = text
+                
+        # Combine metadata
+        combined_meta = {
+            **chunk_meta,
+            "xml_path": xml_path,
+            "content_type": detect_content_type(text)
+        }
+        
+        final_meta = flatten_metadata(combined_meta)
+        
+        texts.append(embedable_text)
+        chunk_metadatas.append(final_meta)
 
-    else:
-        # If chunks is a list of strings
-        texts = chunks
-        chunk_metadatas = []
-        for t, m, xml_path in zip(texts, (metadatas or [{}]*len(texts)), xml_paths):
-            combined_meta = {
-                **(m or {}),
-                "xml_path": xml_path,
-                "content_type": detect_content_type(t),
-            }
-            final_meta = flatten_metadata(combined_meta)
-            chunk_metadatas.append(final_meta)
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Processed chunk with content_type: {combined_meta['content_type']}")
+            st.write(f"DEBUG => Metadata keys: {list(final_meta.keys())}")
 
-    # Debug: see exactly what we pass to Chroma
-    for i, meta in enumerate(chunk_metadatas):
-        print(f"add_to_chroma_collection => metadata #{i} = {meta}")
+    # Generate embeddings
+    embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
+    embeddings = embedding_function(texts)
 
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Generated {len(embeddings)} embeddings")
+        st.write(f"DEBUG => First embedding dimension: {len(embeddings[0])}")
+
+    # Create/get collection and add documents
     ids = [str(uuid.uuid4()) for _ in chunks]
     coll = create_or_load_collection(collection_name)
-
+    
+    if DEBUG_MODE:
+        st.write("DEBUG => Adding to ChromaDB:")
+        st.write(f"  - Documents: {len(texts)}")
+        st.write(f"  - Embeddings: {len(embeddings)}")
+        st.write(f"  - Metadata: {len(chunk_metadatas)}")
+    
     coll.add(
         documents=texts,
+        embeddings=embeddings,  # Explicitly pass embeddings
         metadatas=chunk_metadatas,
         ids=ids
     )
-
+    
     chroma_client.persist()
+    
+    if DEBUG_MODE:
+        st.write("DEBUG => Storage completed and persisted")
 
+def extract_image_data(text: str) -> Optional[Dict[str, str]]:
+    """Helper to extract and validate image data from chunk text."""
+    base64_match = re.search(r"base64=['\"]([^'\"]+)['\"]", text)
+    mime_match = re.search(r"mime_type=['\"]([^'\"]+)['\"]", text)
+    
+    if base64_match and mime_match:
+        base64_data = base64_match.group(1)
+        mime_type = mime_match.group(1)
+        
+        # Validate base64 data
+        if base64_data.strip():
+            try:
+                # Try to decode a small part to verify it's valid base64
+                import base64
+                test_decode = base64.b64decode(base64_data[:100] + "=" * (-len(base64_data) % 4))
+                return {
+                    "base64": base64_data,
+                    "mime_type": mime_type
+                }
+            except Exception as e:
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => Base64 validation failed: {str(e)}")
+                return None
+    return None
 
 def query_collection(query: str, collection_name: str, n_results: int = 10):
-    """
-    Enhanced country detection with proper ChromaDB querying.
-    NOW returns: {
-       'covered_countries': { 'CH': [passage1, passage2, ...], 'US': [...], ... },
-       'missing_countries': ['BR', 'CN', ...]
-    }
-    """
-
+    """Enhanced query function that returns data in correct format."""
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
 
@@ -1861,7 +1937,7 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
     else:
         st.write("❌ No country codes detected in query")
 
-    # 3) Create or load your Chroma collection
+    # 3) Create or load Chroma collection
     force_flag = st.session_state.get("force_recreate", False)
     coll = create_or_load_collection(collection_name, force_recreate=force_flag)
     coll_info = coll.get()
@@ -1871,59 +1947,48 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
 
     if doc_count == 0:
         st.warning("No documents found in collection. Please upload first.")
-        # Return empty coverage:
         return {"covered_countries": {}, "missing_countries": []}
 
-    # 4) Prepare structures
+    # 4) Initialize structures
     iso_codes = [d["code"] for d in detected_list]
     covered_countries = {}
     missing_countries = []
-    # We'll also union everything for pipeline UI
     combined_passages = []
     combined_metadata = []
     seen_passages = set()
 
-    # 5) If we found any countries, query each one individually
+    # 5) Query for each country
     if iso_codes:
         for code in iso_codes:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Querying for country code: {code}")
+            
             results = coll.query(
                 query_texts=[query],
-                where={"country_code": code},  # strict equality
+                where={"country_code": code},
                 n_results=n_results
             )
+            
             curr_passages = results.get("documents", [[]])[0]
             curr_metadata = results.get("metadatas", [[]])[0]
 
-            if curr_passages:
-                # We have coverage for this country
-                covered_countries[code] = curr_passages
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Found {len(curr_passages)} passages for {code}")
+                if curr_metadata:
+                    st.write(f"DEBUG => First metadata keys: {list(curr_metadata[0].keys())}")
 
-                # For pipeline visualization, unify them into combined_passages
+            if curr_passages:
+                covered_countries[code] = curr_passages
                 for p, m in zip(curr_passages, curr_metadata):
                     if p not in seen_passages:
                         combined_passages.append(p)
                         combined_metadata.append(m)
                         seen_passages.add(p)
             else:
-                # Mark as missing coverage
                 missing_countries.append(code)
 
-        # Optional fallback if you still want more results in total
-        if len(combined_passages) < n_results:
-            other_results = coll.query(
-                query_texts=[query],
-                n_results=(n_results - len(combined_passages))
-            )
-            other_passages = other_results.get("documents", [[]])[0]
-            other_metadata = other_results.get("metadatas", [[]])[0]
-
-            for p, m in zip(other_passages, other_metadata):
-                if p not in seen_passages:
-                    combined_passages.append(p)
-                    combined_metadata.append(m)
-                    seen_passages.add(p)
     else:
-        # 6) If no countries detected, do a standard search
+        # Standard search if no countries detected
         if DEBUG_MODE:
             st.write("DEBUG => Doing standard search with no country filter.")
         results = coll.query(
@@ -1933,121 +1998,217 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
         combined_passages = results.get("documents", [[]])[0]
         combined_metadata = results.get("metadatas", [[]])[0]
 
-    # 7) Update pipeline stage with the combined (union) results for UI
     if DEBUG_MODE:
-        st.write(f"DEBUG => Retrieved {len(combined_passages)} passages total")
+        st.write(f"DEBUG => Final combined passages: {len(combined_passages)}")
+        st.write(f"DEBUG => Final combined metadata: {len(combined_metadata)}")
+        if combined_metadata:
+            st.write(f"DEBUG => Metadata sample keys: {list(combined_metadata[0].keys())}")
 
+    # Update pipeline stage with combined results
     update_stage('retrieve', {
-        "passages": combined_passages or [],
-        "metadata": combined_metadata or []
+        "passages": combined_passages,
+        "metadata": combined_metadata
     })
 
-    if combined_passages:
-        # Print which countries appear in the retrieved chunk metadata
+    # Print found countries
+    if combined_metadata:
         countries_found = set(meta.get('country_code', 'Unknown') for meta in combined_metadata)
         st.write(f"Total countries in database: {', '.join(countries_found)}")
 
-    # 8) Return coverage dictionary
-    return {
-        "covered_countries": covered_countries,
-        "missing_countries": missing_countries
-    }
+    return combined_passages, combined_metadata
 
 ##############################################################################
 # 7) GPT ANSWER GENERATION
 ##############################################################################
-def generate_answer_with_gpt(query: str, retrieved_passages: List[str], retrieved_metadata: List[dict],
-                             system_instruction: str = None):
-    """
-    Revised approach that checks coverage by country (via query_collection).
-    If *all* countries are missing, produce CASEB.
-    Otherwise, produce CASEA for covered countries and
-    "No information in my documents." for missing ones.
-    """
 
-    if system_instruction is None:
-        system_instruction = st.session_state.get("custom_prompt", BASE_DEFAULT_PROMPT)
+def process_image_run(run, doc) -> Dict[str, Any]:
+    """Enhanced image processor that properly formats for vision API."""
+    try:
+        # Extract image from DOCX
+        image_data = run._r.drawing_lst[0].xpath('.//a:blip/@r:embed')[0]
+        image_rel = doc.part.rels[image_data]
+        image_bytes = image_rel.target_part.blob
+        
+        # Open with PIL for metadata
+        image = Image.open(BytesIO(image_bytes))
+        format = image.format.lower()
+        
+        # Get base64 and mime type
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+        mime_type = get_image_mime_type(format)
+        
+        return {
+            "width": image.size[0],
+            "height": image.size[1],
+            "format": format,
+            "mime_type": mime_type,
+            "base64_data": base64_data,
+            "image_bytes": image_bytes  # Keep original bytes for file saving
+        }
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Image processing error: {str(e)}")
+        return {"error": str(e)}
 
-    # 1) Identify coverage
-    coverage = query_collection(query, "rag_collection", n_results=50)
-    covered = coverage["covered_countries"]
-    missing = coverage["missing_countries"]
+def create_image_chunk(image_info: Dict[str, Any], saved_path: str) -> Dict[str, str]:
+    """Create a chunk that includes both path reference and base64 data."""
+    return {
+        "text": (
+            f"Image: {saved_path} ({image_info['width']}x{image_info['height']} {image_info['format'].upper()})\n"
+            f"<image_data mime_type='{image_info['mime_type']}' base64='{image_info['base64_data']}' />"
+        ),
+        "metadata": {
+            "content_type": "image",
+            "mime_type": image_info['mime_type'],
+            "dimensions": f"{image_info['width']}x{image_info['height']}"
+        }
+    }
 
-    # If all countries are missing => pure CASEB
-    if not covered:
-        # Format a CASEB response directly
-        missing_list = ", ".join(missing) if missing else "unknown"
-        answer = (
-            "# Sorry!\n"
-            "The uploaded document states nothing relevant according to your query...\n\n"
-            "# Best guess\n"
-            f"(We have no doc coverage for: {missing_list})\n"
-            "\n"
-            "# The fun part :-)\n"
-            "_(section requested in Step 0 to show how output can be steered)_\n"
-            "No doc-based info. Here's a playful or sarcastic reflection... 😅\n"
-        )
-        update_stage('generate', {'answer': answer})
-        return answer
-
-    # 2) Build a doc-based summary for each covered country
-    doc_sections = []
-    for iso_code, passages in covered.items():
-        joined_text = "\n".join(passages)
-        doc_sections.append(f"[Doc Coverage for {iso_code}]\n{joined_text}\n")
-
-    # 3) Add explicit disclaimers for missing countries
-    if missing:
-        # We'll instruct the LLM to say "No information in my documents." for these
-        disclaimers = [f"{iso}: No information in my documents." for iso in missing]
-        doc_sections.append("Missing:\n" + "\n".join(disclaimers))
-
-    # 4) Combine everything into a single system message
-    combined_docs = "\n\n".join(doc_sections)
-    final_system = f"""
-    You are an extremely knowledgeable assistant. The user references multiple countries in their query.
-    You must only use the doc coverage below for the countries we have:
-
-    {combined_docs}
-
-    RULES:
-      - For each missing country, literally say: "No information in my documents."
-      - For covered countries, produce the normal structure CASEA (but don't tell the user this name):
-          1) Instructions to Action
-          2) TL;DR Summary
-          3) Detailed Explanation
-          4) Other References
-
-    If the user only references missing countries, produce structure CASEB (but don't tell the user this name):
-
-    DO NOT guess or provide external info about missing countries.
-    """
-
-    # We'll pass this combined context as the system prompt
-    messages = [
-        {"role": "system", "content": final_system},
-        {"role": "user", "content": query}
-    ]
+def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dict],
+                           system_instruction: str = None):
+    """Generate answer with proper query result handling."""
+    if not st.session_state.get("api_key"):
+        st.error("OpenAI API key not set.")
+        st.stop()
 
     if DEBUG_MODE:
-        st.write(f"DEBUG => final prompt length={sum(len(m['content']) for m in messages)} chars")
+        st.write(f"DEBUG => Starting answer generation")
+        st.write(f"DEBUG => Received {len(passages)} passages and {len(metadata)} metadata entries")
+
+    # Group passages and metadata by country code
+    country_data = {}
+    missing_countries = []
+
+    # Process passages and their metadata together
+    for passage, meta in zip(passages, metadata):
+        country_code = meta.get('country_code')
+        if country_code:
+            if country_code not in country_data:
+                country_data[country_code] = {
+                    'passages': [],
+                    'metadata': []
+                }
+            country_data[country_code]['passages'].append(passage)
+            country_data[country_code]['metadata'].append(meta)
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Grouped data by countries: {list(country_data.keys())}")
+
+    # Initialize messages array
+    messages = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+
+    # Process each country's data
+    for iso_code, data in country_data.items():
+        country_passages = data['passages']
+        country_metadata = data['metadata']
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Processing {len(country_passages)} passages for {iso_code}")
+        
+        for passage, meta in zip(country_passages, country_metadata):
+            # Check if this is an image by looking at the metadata
+            is_image = meta.get('content_type') == 'image'
+            
+            if is_image:
+                # Get the full image chunk from metadata
+                full_chunk = meta.get('full_image_chunk', '')
+                if full_chunk:
+                    # Extract base64 and mime_type
+                    base64_match = re.search(r"base64=['\"]([^'\"]+)['\"]", full_chunk)
+                    mime_match = re.search(r"mime_type=['\"]([^'\"]+)['\"]", full_chunk)
+                    
+                    if base64_match and mime_match:
+                        base64_data = base64_match.group(1)
+                        mime_type = mime_match.group(1)
+                        
+                        if base64_data.strip():
+                            if DEBUG_MODE:
+                                st.write(f"DEBUG => Processing image from {iso_code}")
+                                st.write(f"DEBUG => Base64 length: {len(base64_data)}")
+                                st.write(f"DEBUG => MIME type: {mime_type}")
+                            
+                            # Create message exactly as per OpenAI docs
+                            messages.append({
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": f"Analyze this document image from {iso_code}. Please extract and read all text visible in the image, especially any information about age restrictions or regulations:"
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{mime_type};base64,{base64_data}",
+                                            "detail": "high"
+                                        }
+                                    }
+                                ]
+                            })
+                        else:
+                            if DEBUG_MODE:
+                                st.write(f"DEBUG => Empty base64 data for image")
+                    else:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => No base64/mime data found in chunk")
+            else:
+                # Regular text passage
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"[{iso_code}] {passage}"
+                        }
+                    ]
+                })
+
+    # Add the user's query
+    messages.append({
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": query
+            }
+        ]
+    })
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Total messages: {len(messages)}")
+        for idx, msg in enumerate(messages):
+            st.write(f"DEBUG => Message {idx} role: {msg['role']}")
+            if isinstance(msg['content'], list):
+                for part in msg['content']:
+                    if part['type'] == 'image_url':
+                        st.write(f"DEBUG => Contains image_url with detail={part['image_url'].get('detail')}")
+                        st.write(f"DEBUG => URL prefix: {part['image_url']['url'][:30]}...")
+                    else:
+                        st.write(f"DEBUG => Contains text: {part['text'][:100]}...")
 
     try:
+        if DEBUG_MODE:
+            st.write("DEBUG => Calling OpenAI API...")
+            
         completion = new_client.chat.completions.create(
-            model="chatgpt-4o-latest",  # or whichever model you prefer
+            model="gpt-4o",  # Current supported model
             messages=messages,
             max_tokens=4096,
             temperature=0.0
         )
         answer = completion.choices[0].message.content if completion.choices else ""
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Answer received, length: {len(answer)}")
+            
     except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => API Error: {str(e)}")
+            st.write(f"DEBUG => Error type: {type(e)}")
         answer = f"Error generating response: {str(e)}"
 
-    # 5) Mark stage=generate
     update_stage('generate', {'answer': answer})
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Received final answer of length={len(answer)}")
-
     return answer
 
 
@@ -2525,20 +2686,16 @@ def parse_xml_for_chunks(text: str) -> List[Dict[str, Any]]:
 
 def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict[str, Any]]:
     """
-    Processes ONE well-formed XML doc string into chunk dicts. 
-    - <text>/<list-item> appended to a text buffer until we reach ~max_chunk_size.
-    - <table> => single chunk in Markdown form.
-    - <image> => single chunk "Image: path (WxH Format)".
+    Processes ONE well-formed XML doc string into chunk dicts with proper base64 handling.
     """
     import xml.etree.ElementTree as ET
     from io import StringIO
 
-    # parse the XML
     tree = ET.parse(StringIO(xml_text))
-    root = tree.getroot()  # e.g. <AU> ... or <US> ...
+    root = tree.getroot()
     country_code = root.tag.upper()
 
-    # gather doc-level metadata from <metadata> if it exists
+    # gather doc-level metadata
     meta = {}
     metadata_elem = root.find('metadata')
     if metadata_elem is not None:
@@ -2547,18 +2704,13 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
 
     content_elem = root.find('content')
     if content_elem is None:
-        # no content => return empty
         return []
 
-    # We'll collect final chunk dicts here
-    chunks: List[Dict[str, Any]] = []
-
-    # We'll buffer <text> lines so we can combine smaller items
-    text_buffer: List[str] = []
+    chunks = []
+    text_buffer = []
     buf_size = 0
 
     def flush_buffer():
-        """If the buffer has text, create one chunk."""
         nonlocal text_buffer, buf_size
         if text_buffer:
             combined_txt = "\n".join(text_buffer).strip()
@@ -2574,31 +2726,75 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
         text_buffer = []
         buf_size = 0
 
-    # --- NEW STEP: Process direct text within <content> ---
+    # Process direct text in content
     if content_elem.text and content_elem.text.strip():
-        direct_text = content_elem.text.strip()
-        text_buffer.append(direct_text)
-        buf_size += len(direct_text)
+        text_buffer.append(content_elem.text.strip())
+        buf_size += len(content_elem.text)
 
-    # For each child in <content> (which might be <text>, <list-item>, <table>, <image>, etc.)
     for element in content_elem:
         tag_name = element.tag.lower()
 
-        if tag_name in ("text", "list-item"):
-            # Accumulate smaller text items in a buffer,
-            # flush if we exceed max_chunk_size
+        if tag_name == "image":
+            flush_buffer()
+            
+            # Get image path
+            path_node = element.find('path')
+            path = path_node.text.strip() if path_node is not None else "[unknown]"
+            
+            # Get dimensions
+            size_node = element.find('size')
+            w = h = "0"
+            if size_node is not None:
+                w_node = size_node.find('width')
+                h_node = size_node.find('height')
+                w = (w_node.text if w_node is not None else "0")
+                h = (h_node.text if h_node is not None else "0")
+            
+            # Get image format
+            fmt_node = element.find('format')
+            fmt = fmt_node.text.strip() if fmt_node is not None else "jpeg"
+            
+            # CRITICAL: Extract base64 data from image_data node
+            image_data_node = element.find('image_data')
+            if image_data_node is not None:
+                mime_type = image_data_node.get('mime_type', 'image/jpeg')
+                base64_data = image_data_node.get('base64', '')
+                
+                # Create chunk only if we have base64 data
+                if base64_data:
+                    image_text = (
+                        f"Image: {path} ({w}x{h} {fmt})\n"
+                        f"<image_data mime_type='{mime_type}' base64='{base64_data}' />"
+                    )
+                    
+                    chunks.append({
+                        "text": image_text,
+                        "metadata": {
+                            **meta,
+                            "country_code": country_code,
+                            "content_type": "image",
+                            "mime_type": mime_type,
+                            "dimensions": f"{w}x{h}",
+                            "format": fmt
+                        }
+                    })
+                else:
+                    if DEBUG_MODE:
+                        st.write(f"DEBUG => Missing base64 data for image: {path}")
+            else:
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => No image_data node found for: {path}")
+
+        elif tag_name in ("text", "list-item"):
             text_val = (element.text or "").strip()
-            if not text_val:
-                continue
-            if (len(text_val) + buf_size) > max_chunk_size:
-                flush_buffer()
-            text_buffer.append(text_val)
-            buf_size += len(text_val)
+            if text_val:
+                if (len(text_val) + buf_size) > max_chunk_size:
+                    flush_buffer()
+                text_buffer.append(text_val)
+                buf_size += len(text_val)
 
         elif tag_name == "table":
-            # flush current text buffer
             flush_buffer()
-            # Convert table to markdown
             table_md = convert_table_to_markdown(element)
             chunks.append({
                 "text": table_md,
@@ -2609,44 +2805,7 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
                 }
             })
 
-        elif tag_name == "image":
-            # flush text buffer
-            flush_buffer()
-            # Build an "image chunk"
-            path_node = element.find('path')
-            size_node = element.find('size')
-            fmt_node  = element.find('format')
-            if path_node is not None:
-                path = (path_node.text or "").strip()
-            else:
-                path = "[unknown]"
-
-            w, h, fmt = "?", "?", "?"
-            if size_node is not None:
-                w_node = size_node.find('width')
-                h_node = size_node.find('height')
-                w = (w_node.text if w_node is not None else "0")
-                h = (h_node.text if h_node is not None else "0")
-            if fmt_node is not None:
-                fmt = (fmt_node.text or "JPEG")
-
-            image_text = f"Image: {path} ({w}x{h} {fmt})"
-            chunks.append({
-                "text": image_text,
-                "metadata": {
-                    **meta,
-                    "country_code": country_code,
-                    "content_type": "image"
-                }
-            })
-
-        else:
-            # If other tags exist, handle them or ignore them
-            pass
-
-    # at the end, flush leftover buffered text
     flush_buffer()
-
     return chunks
 
 def convert_table_to_markdown(table_elem) -> str:
@@ -3240,6 +3399,8 @@ def main():
             if current_question.strip():
                 passages, metadata = query_collection(current_question, "rag_collection", n_results=50)
                 if passages:
+                    if DEBUG_MODE:
+                        st.write(f"DEBUG => Retrieved {len(passages)} passages with {len(metadata)} metadata entries")
                     answer = generate_answer_with_gpt(current_question, passages, metadata)
                     st.session_state.final_answer = answer
                     st.session_state.final_question_step7 = current_question
