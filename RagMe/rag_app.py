@@ -200,17 +200,21 @@ CHROMA_DIRECTORY = "chromadb_storage"
 # Initialize ChromaDB with our custom embedding function instance
 def init_chroma_client():
     if "api_key" not in st.session_state or not st.session_state.get("user_id"):
-        st.write("DEBUG: API key or user_id missing in session state")
+        if DEBUG_MODE:
+                st.write("DEBUG: API key or user_id missing in session state")
         return None, None
 
-    st.write(f"DEBUG: API key from session: '{st.session_state.get('api_key')}'")
-    st.write(f"DEBUG: user_id from session: '{st.session_state.get('user_id')}'")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: API key from session: '{st.session_state.get('api_key')}'")
+        st.write(f"DEBUG: user_id from session: '{st.session_state.get('user_id')}'")
     
     dirs = get_user_specific_directory(st.session_state.user_id)
-    st.write(f"DEBUG: Initializing Chroma client with persist directory: {dirs['chroma']}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Initializing Chroma client with persist directory: {dirs['chroma']}")
     
     embedding_function_instance = OpenAIEmbeddingFunction(st.session_state["api_key"])
-    st.write(f"DEBUG: embedding_function_instance hash: {hash(embedding_function_instance)}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: embedding_function_instance hash: {hash(embedding_function_instance)}")
     
     client = chromadb.Client(Settings(
         chroma_db_impl="duckdb+parquet",
@@ -218,7 +222,8 @@ def init_chroma_client():
     ))
     
     current_collections = [c.name for c in client.list_collections()]
-    st.write(f"DEBUG: Chroma client initialized. Current collections: {current_collections}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Chroma client initialized. Current collections: {current_collections}")
     
     return client, embedding_function_instance
 
@@ -607,7 +612,8 @@ def update_stage(stage: str, data=None):
                 'scores': [0.95, 0.87, 0.82],
                 'metadata': meta_list or []
             }
-            st.write(f"DEBUG => retrieve fallback => {enhanced_data}")
+            if DEBUG_MODE:
+                st.write(f"DEBUG => retrieve fallback => {enhanced_data}")
 
     elif stage == 'generate':
         # For "generate" stage
@@ -1780,7 +1786,8 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
         st.stop()
     
-    st.write(f"DEBUG: In create_or_load_collection, embedding_function_instance hash: {hash(embedding_function_instance)}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: In create_or_load_collection, embedding_function_instance hash: {hash(embedding_function_instance)}")
     
     if force_recreate:
         try:
@@ -1792,17 +1799,21 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
     # List current files in the persist directory (for additional confirmation)
     import glob
     persist_files = glob.glob(os.path.join(get_user_specific_directory(st.session_state.user_id)["chroma"], "*"))
-    st.write(f"DEBUG: Files in persist directory before loading collection: {persist_files}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Files in persist directory before loading collection: {persist_files}")
     
     current_collections = [c.name for c in chroma_client.list_collections()]
-    st.write(f"DEBUG: Current collections in persist directory: {current_collections}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Current collections in persist directory: {current_collections}")
     
     if collection_name in current_collections:
         coll = chroma_client.get_collection(name=collection_name, embedding_function=embedding_function_instance)
-        st.write(f"DEBUG: Found existing collection '{collection_name}'")
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Found existing collection '{collection_name}'")
     else:
         coll = chroma_client.create_collection(name=collection_name, embedding_function=embedding_function_instance)
-        st.write(f"DEBUG: Created new collection '{collection_name}'")
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Created new collection '{collection_name}'")
     
     return coll
 
@@ -2292,7 +2303,7 @@ def get_ephemeral_token(collection_name: str = "rag_collection"):
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to create voice session: {str(e)}")
         if hasattr(e.response, 'text'):
-            st.write("Error response:", e.response.text)
+            st.write("Error:", e.response.text)
         return None
 
 
@@ -2444,7 +2455,8 @@ import glob  # add this import if not already present
 def get_user_specific_directory(user_id: str) -> dict:
     # Use an absolute path to ensure consistency.
     base_dir = os.path.join(os.getcwd(), f"chromadb_storage_user_{user_id}")
-    st.write(f"DEBUG: Using persist directory: {base_dir}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Using persist directory: {base_dir}")
     
     dirs = {
         "base": base_dir,
@@ -2455,11 +2467,13 @@ def get_user_specific_directory(user_id: str) -> dict:
     
     for dir_path in dirs.values():
         os.makedirs(dir_path, exist_ok=True)
-        st.write(f"DEBUG: Ensured directory exists: {dir_path}")
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Ensured directory exists: {dir_path}")
     
     # List all files in the persist directory
     files = glob.glob(os.path.join(dirs["chroma"], "*"))
-    st.write(f"DEBUG: Files in persist directory: {files}")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Files in persist directory: {files}")
     
     return dirs
 
@@ -2659,13 +2673,15 @@ def chunk_text(text: str) -> List[str]:
     7) update “chunk” stage
     """
     canonical_text = ensure_canonical_order(text)
-    st.write("DEBUG: chunk_text -> after ensure_canonical_order()")
+    if DEBUG_MODE:
+        st.write("DEBUG: chunk_text -> after ensure_canonical_order()")
 
     # Remove lines that are solely dashes.
     lines = canonical_text.splitlines()
     cleaned_lines = [l for l in lines if not re.fullmatch(r"[-]+", l.strip())]
     cleaned_text = "\n".join(cleaned_lines)
-    st.write("DEBUG: cleaned_text snippet:", cleaned_text[:100])
+    if DEBUG_MODE:
+        st.write("DEBUG: cleaned_text snippet:", cleaned_text[:100])
 
     # Split by markers
     pattern = r"(={5,}\s*(?:CH|US|END OF CH|END OF US)\s*={5,})"
