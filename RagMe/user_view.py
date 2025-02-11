@@ -8,7 +8,7 @@ import uuid
 import pycountry
 
 # ============== ADAPT THESE AS NEEDED ================
-HARD_CODED_API_KEY = "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"   # <--- Replace with your actual key
+HARD_CODED_API_KEY = ""   # <--- Replace with your actual key
 CHROMA_COLLECTION_NAME = "rag_collection"
 USER_DB_FILE = "users.json"     # same user DB as main app
 # =====================================================
@@ -296,14 +296,15 @@ def generate_answer_with_case_logic(user_id: str, query: str, passages, metadata
 #  8) MAIN MINIMAL APP
 # ==========================
 def main():
+    global HARD_CODED_API_KEY
     st.set_page_config(page_title="Corporate Minimal UI (With Full RAG)", layout="centered")
-
-    # Logo at top-left
-    st.image("https://placehold.co/150x60?text=Your+Logo", use_column_width=False)
-
-    st.title("Welcome to Our Minimal RAG UI with Full Logic")
-
-    # Basic login
+    
+    # Sidebar API key input: if HARD_CODED_API_KEY is empty, allow the user to input one.
+    api_key_input = st.sidebar.text_input("Enter OpenAI API Key", value=HARD_CODED_API_KEY, type="password")
+    HARD_CODED_API_KEY = api_key_input.strip()
+    st.write(f"DEBUG: Using API key: '{HARD_CODED_API_KEY}'")
+    
+    # Continue with your login / user logic...
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.user_id = None
