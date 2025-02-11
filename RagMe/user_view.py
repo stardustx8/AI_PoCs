@@ -1,28 +1,23 @@
+# user_view.py
 import streamlit as st
 import os
 import json
 import requests
 import re
-import uuid
 import pycountry
 
-CHROMA_COLLECTION_NAME = "rag_collection"
-USER_DB_FILE = "users.json"  # same user DB as main app
+import chromadb
+from chromadb.config import Settings
 
-def load_users():
-    if not os.path.exists(USER_DB_FILE):
-        return {}
-    with open(USER_DB_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+DEBUG_MODE = True  # <--- Ensure we have a global switch for debug
 
-def verify_login(username, password):
-    users = load_users()
-    return (username in users) and (users[username] == password)
-
+# =======================
+# 1) Minimal "OpenAI" HTTP Client 
+# =======================
 class OpenAI:
     def __init__(self):
         if "api_key" not in st.session_state or not st.session_state["api_key"]:
-            raise ValueError("OpenAI API key not found in session_state.")
+            raise ValueError("OpenAI API key not found in session_state. Provide it in the sidebar.")
         self.api_key = st.session_state["api_key"].strip()
         self.base_url = "https://api.openai.com/v1"
         self.session = requests.Session()
@@ -30,6 +25,8 @@ class OpenAI:
         self.session.headers["Content-Type"] = "application/json"
 
     def chat_completions_create(self, model, messages, max_tokens=1024, temperature=0.2):
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Sending chat request to OpenAI, model='{model}', #messages={len(messages)}")  # DEBUG ADDED
         payload = {
             "model": model,
             "messages": messages,
@@ -41,34 +38,23 @@ class OpenAI:
             raise Exception(f"OpenAI API error: {resp.status_code}\nResponse: {resp.text}")
         return resp.json()
 
-import chromadb
-from chromadb.config import Settings
-
-def get_user_chroma_client(user_id: str):
-    # If your main app uses a subfolder like "chroma_db", replicate that exactly.
-    base_dir = f"chromadb_storage_user_{user_id}"
-    chroma_dir = os.path.join(base_dir, "chroma_db")
-    os.makedirs(chroma_dir, exist_ok=True)
-    return chromadb.Client(
-        Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=chroma_dir
-        )
-    )
-
+# =======================
+# 2) LLMCountryDetector
+# =======================
 class LLMCountryDetector:
     SYSTEM_PROMPT = """
-        You are a specialized assistant for extracting ALL country references 
-        in ANY user text. Output EXACT JSON...
+        ...
     """.strip()
 
     def __init__(self, model: str = "gpt-3.5-turbo"):
         if "api_key" not in st.session_state or not st.session_state["api_key"]:
-            raise ValueError("No API key found in session_state for LLMCountryDetector.")
+            raise ValueError("No API key in session for LLMCountryDetector.")
         self.client = OpenAI()
         self.model = model
 
     def detect_countries_in_text(self, text: str):
+        if DEBUG_MODE:
+            st.write(f"DEBUG => detect_countries_in_text called with text='{text[:100]}'...")  # DEBUG ADDED
         if not text.strip():
             return []
         try:
@@ -82,10 +68,15 @@ class LLMCountryDetector:
                 temperature=0.0
             )
             raw_content = response["choices"][0]["message"]["content"].strip()
+            if DEBUG_MODE:
+                st.write(f"DEBUG => raw LLM country detection content: {raw_content[:200]}...")  # DEBUG ADDED
+
             data = []
+            # Attempt JSON parse
             try:
                 data = json.loads(raw_content)
             except:
+                # fallback naive parse
                 data = []
                 matches = re.findall(
                     r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
@@ -94,6 +85,7 @@ class LLMCountryDetector:
                 for m in matches:
                     phrase, code = m
                     data.append({"detected_phrase": phrase, "code": code})
+
             results = []
             used = set()
             for d in data:
@@ -103,30 +95,75 @@ class LLMCountryDetector:
                     if code not in used:
                         used.add(code)
                         results.append({"detected_phrase": phrase, "code": code})
+            if DEBUG_MODE:
+                st.write(f"DEBUG => final countries detected: {results}")  # DEBUG ADDED
             return results
-        except Exception:
+
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => error in detect_countries_in_text: {str(e)}")
             return []
 
+# =======================
+# 3) Global CASE Instructions
+# =======================
 BASE_DEFAULT_PROMPT = (
     "  <ROLE>\n"
-    "    ... (same multi-step instructions) ...\n"
-    "  </ROLE>\n\n"
-    "  <INSTRUCTIONS>\n"
-    "    ... see main app's instructions ...\n"
-    "  </INSTRUCTIONS>\n\n"
-    "  ... etc.\n"
+    "    ... instructions ...\n"
+    "  </ROLE>"
 )
 
-def query_chroma_for_countries(user_id: str, query: str, n_results=10):
+# =======================
+# 4) get_chroma_client
+# =======================
+def get_chroma_client():
+    if "chroma_folder" not in st.session_state or not st.session_state["chroma_folder"].strip():
+        raise ValueError("No Chroma DB folder specified in session_state.")
+    folder = st.session_state["chroma_folder"].strip()
+
+    # DEBUG prints
+    if DEBUG_MODE:
+        st.write(f"DEBUG => get_chroma_client using folder='{folder}'")
+
+    # Check if folder actually exists
+    if not os.path.exists(folder):
+        st.write(f"DEBUG => Folder does NOT exist yet, creating it: {folder}")
+        os.makedirs(folder, exist_ok=True)
+    else:
+        st.write(f"DEBUG => Folder exists: {folder}")
+
+    # Print the files inside
+    import glob
+    files_in_folder = glob.glob(os.path.join(folder, "*"))
+    st.write(f"DEBUG => files in '{folder}': {files_in_folder}")  # DEBUG ADDED
+
+    client = chromadb.Client(
+        Settings(
+            chroma_db_impl="duckdb+parquet",
+            persist_directory=folder
+        )
+    )
+    # List existing collections
+    all_colls = client.list_collections()
+    st.write(f"DEBUG => after instantiating client, list_collections() => {[c.name for c in all_colls]}")  # DEBUG ADDED
+    return client
+
+# =======================
+# 5) query_chroma_for_countries
+# =======================
+def query_chroma_for_countries(query: str, collection_name="rag_collection", n_results=10):
+    if DEBUG_MODE:
+        st.write(f"DEBUG => query_chroma_for_countries -> query='{query}' collection='{collection_name}'")
     detector = LLMCountryDetector()
     detected = detector.detect_countries_in_text(query)
     codes = [d["code"] for d in detected]
 
-    client = get_user_chroma_client(user_id)
+    client = get_chroma_client()
     try:
-        collection = client.get_collection(name=CHROMA_COLLECTION_NAME)
+        collection = client.get_collection(name=collection_name)
+        st.write(f"DEBUG => got collection '{collection_name}'")  # DEBUG ADDED
     except:
-        st.warning("No RAG collection found. Please upload docs in main app first.")
+        st.warning(f"No collection named '{collection_name}' found in folder: {st.session_state['chroma_folder']}")
         return [], []
 
     all_docs = collection.get()
@@ -136,14 +173,16 @@ def query_chroma_for_countries(user_id: str, query: str, n_results=10):
         if m and "country_code" in m:
             available_countries.add(m["country_code"])
 
+    if DEBUG_MODE:
+        st.write(f"DEBUG => in collection '{collection_name}' => total docs={len(all_docs.get('ids', []))}, countries={available_countries}")
+
     combined_passages = []
     combined_metadata = []
     seen_passages = set()
 
     if codes:
         for code in codes:
-            if code not in available_countries:
-                continue
+            st.write(f"DEBUG => searching for code='{code}' in where={{country_code: code}}")  # DEBUG ADDED
             results = collection.query(query_texts=[query], where={"country_code": code}, n_results=n_results)
             pass_list = results.get("documents", [[]])[0]
             meta_list = results.get("metadatas", [[]])[0]
@@ -155,13 +194,17 @@ def query_chroma_for_countries(user_id: str, query: str, n_results=10):
                     seen_passages.add(key)
     else:
         # fallback => broad search
+        st.write("DEBUG => no countries detected => broad search")  # DEBUG ADDED
         results = collection.query(query_texts=[query], n_results=n_results)
         combined_passages = results.get("documents", [[]])[0]
         combined_metadata = results.get("metadatas", [[]])[0]
 
     return combined_passages, combined_metadata
 
-def generate_answer_with_case_logic(user_id: str, query: str, passages, metadata):
+# =======================
+# 6) generate_answer
+# =======================
+def generate_answer(query: str, passages, metadata):
     messages = []
     messages.append({"role": "system", "content": BASE_DEFAULT_PROMPT})
 
@@ -169,8 +212,8 @@ def generate_answer_with_case_logic(user_id: str, query: str, passages, metadata
         docs_text = "\n\n".join([f"Doc snippet {i+1}:\n{p}" for i,p in enumerate(passages)])
     else:
         docs_text = "No relevant documents found."
-
     messages.append({"role": "system", "content": f"RAG DOCUMENTS:\n{docs_text}"})
+
     messages.append({"role": "user", "content": query})
 
     try:
@@ -181,66 +224,102 @@ def generate_answer_with_case_logic(user_id: str, query: str, passages, metadata
             max_tokens=1500,
             temperature=0.2
         )
-        answer = resp["choices"][0]["message"]["content"]
-        return answer
+        return resp["choices"][0]["message"]["content"]
     except Exception as e:
         return f"Error generating final answer: {e}"
 
-def main():
-    st.set_page_config(page_title="Corporate Minimal UI (With Full RAG)")
+# =======================
+# 7) Directory Browser 
+# =======================
+def list_subfolders(path: str):
+    try:
+        entries = os.scandir(path)
+        subfolders = []
+        for e in entries:
+            if e.is_dir():
+                subfolders.append(e.name)
+        subfolders.sort()
+        return subfolders
+    except Exception:
+        return []
 
-    # 1) Build a sidebar to set the API key
-    st.sidebar.header("API Key / Config")
+def build_directory_browser():
+    if "browse_path" not in st.session_state:
+        st.session_state.browse_path = os.getcwd()
+
+    st.sidebar.markdown("**Directory Browser**")
+    st.sidebar.write(f"Current: `{st.session_state.browse_path}`")
+
+    subs = list_subfolders(st.session_state.browse_path)
+    if subs:
+        choice = st.sidebar.selectbox("Subfolders", options=["(Select a folder)"] + subs)
+        if choice != "(Select a folder)":
+            if st.sidebar.button("Go to Subfolder"):
+                st.session_state.browse_path = os.path.join(st.session_state.browse_path, choice)
+    else:
+        st.sidebar.write("No subfolders here.")
+
+    if st.sidebar.button("Go Up One Level"):
+        parent = os.path.dirname(st.session_state.browse_path)
+        if parent and os.path.isdir(parent):
+            st.session_state.browse_path = parent
+
+    if st.sidebar.button("Set as Chroma Folder"):
+        st.session_state["chroma_folder"] = st.session_state.browse_path
+        st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
+
+# =======================
+# 8) MAIN UI (No login)
+# =======================
+def main():
+    st.set_page_config(page_title="Simple RAG UI + Dir Browser (No Login)", layout="wide")
+
+    st.sidebar.header("Settings")
+
+    # API Key
     if "api_key" not in st.session_state:
         st.session_state["api_key"] = ""
-    st.session_state["api_key"] = st.sidebar.text_input(
-        "OpenAI API Key",
-        value=st.session_state["api_key"]
-    )
+    st.session_state["api_key"] = st.sidebar.text_input("OpenAI API Key", value=st.session_state["api_key"])
 
-    # 2) Logo at top, using the new parameter use_container_width
-    st.image(
-        "https://placehold.co/150x60?text=Your+Logo", 
-        use_container_width=True
-    )
+    # Directory Browser
+    build_directory_browser()
 
-    st.title("Welcome to Our Minimal RAG UI with Full Logic")
+    # Check Collections
+    if st.sidebar.button("Check Collections"):
+        if not st.session_state.get("chroma_folder", "").strip():
+            st.sidebar.warning("No Chroma DB folder is set. Use the directory browser above.")
+        else:
+            st.write("DEBUG => Checking collections in user-chosen folder...")  # DEBUG ADDED
+            try:
+                client = get_chroma_client()
+                coll_list = client.list_collections()
+                if coll_list:
+                    st.sidebar.success(f"Found {len(coll_list)} collection(s): {[c.name for c in coll_list]}")
+                else:
+                    st.sidebar.info("No collections found in that folder.")
+            except Exception as e:
+                st.sidebar.error(f"Error listing collections: {str(e)}")
 
-    # 3) Basic login
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-        st.session_state.user_id = None
+    st.image("https://placehold.co/150x60?text=Your+Logo", use_container_width=True)
+    st.title("Simple RAG UI (No Login)")
+    st.write("Enter your API key, pick a folder with your Chroma DB, then ask a question.")
 
-    if not st.session_state.logged_in:
-        st.subheader("Login to proceed")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if verify_login(username, password):
-                st.session_state.logged_in = True
-                st.session_state.user_id = username
-                st.success(f"Logged in as {username}")
-            else:
-                st.error("Invalid credentials")
-        return
-    else:
-        st.write(f"**Hello, {st.session_state.user_id}!**")
-
-    # 4) Ensure we have an API key
-    if not st.session_state["api_key"].strip():
-        st.warning("Please enter your OpenAI API key in the sidebar.")
-        return
-
-    # 5) Let user ask a question
-    user_query = st.text_input("Ask a question using our RAG approach:")
-    if st.button("Answer"):
+    user_query = st.text_input("Your question:")
+    if st.button("Get Answer"):
+        if not st.session_state["api_key"].strip():
+            st.error("Please provide an OpenAI API key in the sidebar.")
+            return
+        if not st.session_state.get("chroma_folder", "").strip():
+            st.error("Please pick or set your Chroma DB folder in the sidebar.")
+            return
         if not user_query.strip():
             st.warning("Please enter a question first.")
-        else:
-            passages, meta = query_chroma_for_countries(st.session_state.user_id, user_query, n_results=10)
-            answer = generate_answer_with_case_logic(st.session_state.user_id, user_query, passages, meta)
-            st.markdown("### Answer")
-            st.write(answer)
+            return
+
+        passages, meta = query_chroma_for_countries(user_query, "rag_collection", n_results=10)
+        answer = generate_answer(user_query, passages, meta)
+        st.markdown("### RAG-based Answer")
+        st.write(answer)
 
 if __name__ == "__main__":
     main()

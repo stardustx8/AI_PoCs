@@ -9,7 +9,7 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = False  # Set to True to enable debug prints
+DEBUG_MODE = True  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
@@ -195,37 +195,24 @@ new_client = None  # Set once the user provides an API key
 chroma_client = None  # Global Chroma client
 embedding_function_instance = None  # Global instance of our embedding function
 
-CHROMA_DIRECTORY = "chromadb_storage"
-
 # Initialize ChromaDB with our custom embedding function instance
 def init_chroma_client():
     if "api_key" not in st.session_state or not st.session_state.get("user_id"):
         if DEBUG_MODE:
-                st.write("DEBUG: API key or user_id missing in session state")
+            st.write("DEBUG: API key or user_id missing")
         return None, None
 
+    dirs = get_user_specific_directory(st.session_state["user_id"])
     if DEBUG_MODE:
-        st.write(f"DEBUG: API key from session: '{st.session_state.get('api_key')}'")
-        st.write(f"DEBUG: user_id from session: '{st.session_state.get('user_id')}'")
-    
-    dirs = get_user_specific_directory(st.session_state.user_id)
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Initializing Chroma client with persist directory: {dirs['chroma']}")
-    
-    embedding_function_instance = OpenAIEmbeddingFunction(st.session_state["api_key"])
-    if DEBUG_MODE:
-        st.write(f"DEBUG: embedding_function_instance hash: {hash(embedding_function_instance)}")
-    
+        st.write(f"DEBUG: Using persist directory: {dirs['chroma']}")
+
+    embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
     client = chromadb.Client(Settings(
         chroma_db_impl="duckdb+parquet",
-        persist_directory=dirs["chroma"]
+        persist_directory=dirs["chroma"]  # subfolder e.g. /.../chromadb_storage_user_Rosh/chroma_db
     ))
     
-    current_collections = [c.name for c in client.list_collections()]
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Chroma client initialized. Current collections: {current_collections}")
-    
-    return client, embedding_function_instance
+    return client, embedding_function
 
 # Create embedding function that uses OpenAI
 import hashlib
@@ -2453,14 +2440,26 @@ def create_user_session():
 import glob  # add this import if not already present
 
 def get_user_specific_directory(user_id: str) -> dict:
-    # Use an absolute path to ensure consistency.
+    """
+    Creates a directory layout like:
+      <current_working_dir>/
+        chromadb_storage_user_{user_id}/
+          chroma_db/
+          images/
+          xml/
+    """
     base_dir = os.path.join(os.getcwd(), f"chromadb_storage_user_{user_id}")
+    
+    # Subfolder dedicated to the actual Chroma DB
+    chroma_dir = os.path.join(base_dir, "chroma_db")
+    
     if DEBUG_MODE:
-        st.write(f"DEBUG: Using persist directory: {base_dir}")
+        st.write(f"DEBUG: Using base directory: {base_dir}")
+        st.write(f"DEBUG: Chroma subfolder: {chroma_dir}")
     
     dirs = {
         "base": base_dir,
-        "chroma": base_dir,  # This folder is used as persist_directory
+        "chroma": chroma_dir,  # <--- Use the subfolder for Chroma
         "images": os.path.join(base_dir, "images"),
         "xml": os.path.join(base_dir, "xml")
     }
@@ -2470,8 +2469,9 @@ def get_user_specific_directory(user_id: str) -> dict:
         if DEBUG_MODE:
             st.write(f"DEBUG: Ensured directory exists: {dir_path}")
     
-    # List all files in the persist directory
-    files = glob.glob(os.path.join(dirs["chroma"], "*"))
+    # List all files in the 'chroma' directory
+    import glob
+    files = glob.glob(os.path.join(chroma_dir, "*"))
     if DEBUG_MODE:
         st.write(f"DEBUG: Files in persist directory: {files}")
     
@@ -2503,17 +2503,15 @@ def delete_user_collections(user_id: str) -> tuple[bool, str]:
         return False, "No user ID provided"
     
     try:
-        # Use the hashed directory from get_user_specific_directory
         dirs = get_user_specific_directory(user_id)
-        user_dir = dirs["chroma"]
-        
-        if not os.path.exists(user_dir):
+        user_chroma_db = dirs["chroma"]  # e.g. /.../chromadb_storage_user_Rosh/chroma_db
+
+        if not os.path.exists(user_chroma_db):
             return True, "No collections found for user"
-            
-        # Use the correct module name: chromadb.Client
+
         temp_client = chromadb.Client(Settings(
             chroma_db_impl="duckdb+parquet",
-            persist_directory=user_dir
+            persist_directory=user_chroma_db
         ))
         
         collections = temp_client.list_collections()
@@ -2542,21 +2540,14 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
         return False, "Invalid country code"
     
     try:
-        # 1. Delete images for this country
-        image_dir = Path(f"image_store/{iso_code.lower()}")
-        if image_dir.exists():
-            shutil.rmtree(image_dir)
-        
-        # 2. Get the user-specific directory using get_user_specific_directory
         dirs = get_user_specific_directory(user_id)
-        user_dir = dirs["chroma"]
-        
-        # 3. Initialize the ChromaDB client using the correct module name
+        user_chroma_db = dirs["chroma"]  # subfolder
+
         temp_client = chromadb.Client(Settings(
             chroma_db_impl="duckdb+parquet",
-            persist_directory=user_dir
+            persist_directory=user_chroma_db
         ))
-        
+
         collection = temp_client.get_collection(
             name="rag_collection",
             embedding_function=embedding_function_instance
