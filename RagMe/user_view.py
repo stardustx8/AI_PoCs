@@ -8,7 +8,7 @@ import uuid
 import pycountry
 
 # ============== ADAPT THESE AS NEEDED ================
-HARD_CODED_API_KEY = "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"   # <--- Replace with your actual key
+HARD_CODED_API_KEY = "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"   # <--- Replace with your actual key
 CHROMA_COLLECTION_NAME = "rag_collection"
 USER_DB_FILE = "users.json"     # same user DB as main app
 # =====================================================
