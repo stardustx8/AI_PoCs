@@ -9,7 +9,7 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = False  # Set to True to enable debug prints
+DEBUG_MODE = True  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
@@ -200,19 +200,35 @@ CHROMA_DIRECTORY = "chromadb_storage"
 # Initialize ChromaDB with our custom embedding function instance
 def init_chroma_client():
     if "api_key" not in st.session_state or not st.session_state.get("user_id"):
+        st.write("DEBUG: API key or user_id missing in session state")
         return None, None
-    dirs = get_user_specific_directory(st.session_state.user_id)  # Now returns dict with multiple dirs
+
+    st.write(f"DEBUG: API key from session: '{st.session_state.get('api_key')}'")
+    st.write(f"DEBUG: user_id from session: '{st.session_state.get('user_id')}'")
+    
+    dirs = get_user_specific_directory(st.session_state.user_id)
+    st.write(f"DEBUG: Initializing Chroma client with persist directory: {dirs['chroma']}")
+    
     embedding_function_instance = OpenAIEmbeddingFunction(st.session_state["api_key"])
+    st.write(f"DEBUG: embedding_function_instance hash: {hash(embedding_function_instance)}")
+    
     client = chromadb.Client(Settings(
         chroma_db_impl="duckdb+parquet",
-        persist_directory=dirs["chroma"]  # Use the chroma-specific dir
+        persist_directory=dirs["chroma"]
     ))
+    
+    current_collections = [c.name for c in client.list_collections()]
+    st.write(f"DEBUG: Chroma client initialized. Current collections: {current_collections}")
+    
     return client, embedding_function_instance
 
 # Create embedding function that uses OpenAI
+import hashlib
+
 class OpenAIEmbeddingFunction:
     def __init__(self, api_key):
-        self.client = OpenAI(api_key=api_key)
+        self.api_key = api_key.strip()
+        self.client = OpenAI(api_key=self.api_key)
     
     def __call__(self, texts):
         if not isinstance(texts, list):
@@ -220,6 +236,13 @@ class OpenAIEmbeddingFunction:
         texts = [sanitize_text(t) for t in texts]
         response = self.client.embeddings.create(input=texts, model="text-embedding-3-large")
         return [item.embedding for item in response.data]
+    
+    def __hash__(self):
+        # Deterministic hash using MD5
+        return int(hashlib.md5(self.api_key.encode('utf-8')).hexdigest(), 16)
+    
+    def __eq__(self, other):
+        return isinstance(other, OpenAIEmbeddingFunction) and self.api_key == other.api_key
 
 import re
 from typing import Optional, Dict, Set
@@ -1757,18 +1780,30 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
         st.stop()
     
+    st.write(f"DEBUG: In create_or_load_collection, embedding_function_instance hash: {hash(embedding_function_instance)}")
+    
     if force_recreate:
         try:
             chroma_client.delete_collection(name=collection_name)
-            st.write(f"Deleted existing collection '{collection_name}' due to force_recreate flag.")
+            st.write(f"DEBUG: Deleted existing collection '{collection_name}' due to force_recreate flag.")
         except Exception as e:
-            st.write(f"Could not delete existing collection '{collection_name}': {e}")
+            st.write(f"DEBUG: Could not delete existing collection '{collection_name}': {e}")
     
-    try:
+    # List current files in the persist directory (for additional confirmation)
+    import glob
+    persist_files = glob.glob(os.path.join(get_user_specific_directory(st.session_state.user_id)["chroma"], "*"))
+    st.write(f"DEBUG: Files in persist directory before loading collection: {persist_files}")
+    
+    current_collections = [c.name for c in chroma_client.list_collections()]
+    st.write(f"DEBUG: Current collections in persist directory: {current_collections}")
+    
+    if collection_name in current_collections:
         coll = chroma_client.get_collection(name=collection_name, embedding_function=embedding_function_instance)
-        coll_info = coll.get()
-    except Exception as e:
+        st.write(f"DEBUG: Found existing collection '{collection_name}'")
+    else:
         coll = chroma_client.create_collection(name=collection_name, embedding_function=embedding_function_instance)
+        st.write(f"DEBUG: Created new collection '{collection_name}'")
+    
     return coll
 
 
@@ -2187,7 +2222,7 @@ For each country mentioned ({', '.join(detected_codes)}):
             model="gpt-4o",
             messages=messages,
             max_tokens=4096,
-            temperature=0.4  # Increased temperature for better information correlation
+            temperature=0.3  # Increased temperature for better information correlation
         )
         answer = completion.choices[0].message.content if completion.choices else ""
         
@@ -2210,7 +2245,7 @@ For each country mentioned ({', '.join(detected_codes)}):
                 model="gpt-4o",
                 messages=messages,
                 max_tokens=4096,
-                temperature=0.3  # Slightly lower for correction but still flexible
+                temperature=0.2  # Slightly lower for correction but still flexible
             )
             answer = completion.choices[0].message.content if completion.choices else ""
             
@@ -2404,21 +2439,28 @@ def create_user_session():
         st.session_state.user_id = None
         st.session_state.is_authenticated = False
 
+import glob  # add this import if not already present
+
 def get_user_specific_directory(user_id: str) -> dict:
-    """Create unique directories for each user using a human-readable directory name."""
-    base_dir = f"chromadb_storage_user_{user_id}"
+    # Use an absolute path to ensure consistency.
+    base_dir = os.path.join(os.getcwd(), f"chromadb_storage_user_{user_id}")
+    st.write(f"DEBUG: Using persist directory: {base_dir}")
     
     dirs = {
         "base": base_dir,
-        "chroma": base_dir,
+        "chroma": base_dir,  # This folder is used as persist_directory
         "images": os.path.join(base_dir, "images"),
         "xml": os.path.join(base_dir, "xml")
     }
     
-    # Create all directories
     for dir_path in dirs.values():
         os.makedirs(dir_path, exist_ok=True)
-        
+        st.write(f"DEBUG: Ensured directory exists: {dir_path}")
+    
+    # List all files in the persist directory
+    files = glob.glob(os.path.join(dirs["chroma"], "*"))
+    st.write(f"DEBUG: Files in persist directory: {files}")
+    
     return dirs
 
 def load_users():
@@ -3000,6 +3042,9 @@ def main():
                         st.rerun()
                     else:
                         st.error("Invalid credentials")
+
+                if st.button("Login to User View"):
+                    st.info("Please run `streamlit run user_view.py` to launch the minimal UI, or set up navigation for it.")
 
             with tab2:
                 new_username = st.text_input("New Username", key="new_user")
