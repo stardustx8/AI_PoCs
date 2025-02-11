@@ -136,12 +136,13 @@ def save_voice_instructions(text: str, user_id: str):
     path.parent.mkdir(exist_ok=True)
     path.write_text(text)
 
-
 import chromadb
 from chromadb.config import Settings
 import streamlit.components.v1 as components
 import uuid
 import re
+import hnswlib
+import sys
 import json
 import time
 import numpy as np  # optional for numeric ops
@@ -164,6 +165,7 @@ from docx.table import _Cell, Table
 from docx.text.paragraph import Paragraph
 import docx
 import base64
+import traceback
 from io import BytesIO
 from PIL import Image
 
@@ -196,23 +198,32 @@ chroma_client = None  # Global Chroma client
 embedding_function_instance = None  # Global instance of our embedding function
 
 # Initialize ChromaDB with our custom embedding function instance
+import chromadb
+import chromadb.utils.embedding_functions
+
+
+from chromadb.config import Settings
+from chromadb.utils import embedding_functions
+from chromadb.errors import ChromaError
+
 def init_chroma_client():
-    if "api_key" not in st.session_state or not st.session_state.get("user_id"):
-        if DEBUG_MODE:
-            st.write("DEBUG: API key or user_id missing")
+    if "api_key" not in st.session_state:
         return None, None
 
     dirs = get_user_specific_directory(st.session_state["user_id"])
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Using persist directory: {dirs['chroma']}")
-
     embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
-    client = chromadb.Client(Settings(
-        chroma_db_impl="duckdb+parquet",
-        persist_directory=dirs["chroma"]  # subfolder e.g. /.../chromadb_storage_user_Rosh/chroma_db
-    ))
-    
+
+    # Use the new PersistentClient for local disk storage, rather than Client(Settings(...))
+    client = chromadb.PersistentClient(
+        path=dirs["chroma"],  # the local directory for storing DB data
+        settings=Settings(
+            anonymized_telemetry=False
+            # optionally allow_reset=True if you want .reset() calls
+        )
+    )
+
     return client, embedding_function
+    
 
 # Create embedding function that uses OpenAI
 import hashlib
@@ -235,12 +246,6 @@ class OpenAIEmbeddingFunction:
     
     def __eq__(self, other):
         return isinstance(other, OpenAIEmbeddingFunction) and self.api_key == other.api_key
-
-import re
-from typing import Optional, Dict, Set
-import pycountry
-
-import streamlit as st  # optional if you want to log warnings
 
 import re
 from typing import Optional, Dict, Set
@@ -1794,11 +1799,11 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
         st.write(f"DEBUG: Current collections in persist directory: {current_collections}")
     
     if collection_name in current_collections:
-        coll = chroma_client.get_collection(name=collection_name, embedding_function=embedding_function_instance)
+        coll = chroma_client.get_or_create_collection(name=collection_name)
         if DEBUG_MODE:
             st.write(f"DEBUG: Found existing collection '{collection_name}'")
     else:
-        coll = chroma_client.create_collection(name=collection_name, embedding_function=embedding_function_instance)
+        coll = chroma_client.create_collection(name=collection_name)
         if DEBUG_MODE:
             st.write(f"DEBUG: Created new collection '{collection_name}'")
     
@@ -1877,8 +1882,6 @@ def add_to_chroma_collection(
         metadatas=chunk_metadatas,
         ids=ids
     )
-    
-    chroma_client.persist()
     
     if DEBUG_MODE:
         st.write("DEBUG => Storage completed and persisted")
@@ -2509,16 +2512,17 @@ def delete_user_collections(user_id: str) -> tuple[bool, str]:
         if not os.path.exists(user_chroma_db):
             return True, "No collections found for user"
 
-        temp_client = chromadb.Client(Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=user_chroma_db
-        ))
-        
+        temp_client = chromadb.PersistentClient(
+            path=user_chroma_db,
+            settings=Settings(
+                anonymized_telemetry=False
+            )
+        )
         collections = temp_client.list_collections()
         for collection in collections:
-            temp_client.delete_collection(name=collection.name)
+            temp_client.delete_collection(collection.name)
         
-        temp_client.reset()
+        shutil.rmtree(user_chroma_db)
         shutil.rmtree(user_dir)
         os.makedirs(user_dir, exist_ok=True)
         
@@ -2543,15 +2547,11 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
         dirs = get_user_specific_directory(user_id)
         user_chroma_db = dirs["chroma"]  # subfolder
 
-        temp_client = chromadb.Client(Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=user_chroma_db
-        ))
-
-        collection = temp_client.get_collection(
-            name="rag_collection",
-            embedding_function=embedding_function_instance
+        temp_client = chromadb.PersistentClient(
+            path=user_chroma_db,
+            settings=Settings(anonymized_telemetry=False)
         )
+        collection = temp_client.get_collection(name="rag_collection")
         
         # 4. Query and delete documents for this country code
         try:
