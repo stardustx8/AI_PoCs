@@ -13,7 +13,7 @@ import hashlib
 import glob
 from typing import List, Dict, Any
 
-DEBUG_MODE = True  # <--- Ensure we have a global switch for debug
+DEBUG_MODE = False  # <--- Ensure we have a global switch for debug
 
 
 from pathlib import Path
@@ -49,8 +49,8 @@ BASE_DEFAULT_PROMPT = (
     "       **zero** coverage for that country or topic), you must switch to **CASEB**, which requires:\n"
     "       - A large \"Sorry!\" header: \"The uploaded document states nothing relevant...\"\n"
     "       - A large \"Best guess\" header: attempt an interpretation, clearly flagged as conjecture.\n"
-    "       - A final large header in **red**, titled \"The fun part :-)\". Label it with *(section requested in\n"
-    "         Step 0 to show how output can be steered)* in normal text. Provide a sarcastic or lighthearted\n"
+    "       - A final large header in **red**, titled \"The fun part :-)\".\n"
+    "         Provide a sarcastic or lighthearted\n"
     "         reflection (with emojis) about the query.\n\n"
     "    8. In all doc-based sections, stick strictly to the RAG documents (no external knowledge), keep your\n"
     "       professional or academically rigorous style, and preserve **bold** for pivotal references and *italics*\n"
@@ -65,18 +65,16 @@ BASE_DEFAULT_PROMPT = (
     "    <!-- Two possible final output scenarios -->\n\n"
     "    <!-- Case A: Document-based answer (available info) -->\n"
     "    <CASEA>\n"
-    "      <HEADER_LEVEL1>Instructions to Action</HEADER_LEVEL1>\n"
-    "      <HEADER_LEVEL1>TL;DR Summary</HEADER_LEVEL1>\n"
-    "      <HEADER_LEVEL1>Detailed Explanation</HEADER_LEVEL1>\n"
-    "      <HEADER_LEVEL1>Other References</HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Instructions to Action  ->  </HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>TL;DR Summary  ->  </HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Detailed Explanation  ->  </HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Other References  ->  </HEADER_LEVEL1>\n"
     "    </CASEA>\n\n"
     "    <!-- Case B: No relevant doc coverage for the query -->\n"
     "    <CASEB>\n"
-    "      <HEADER_LEVEL1>Sorry!</HEADER_LEVEL1>\n"
-    "      <HEADER_LEVEL1>Best guess</HEADER_LEVEL1>\n"
-    "      <HEADER_LEVEL1>The fun part :-)\n"
-    "        <SUBTITLE>(section requested in Step 0 to show how output can be steered)</SUBTITLE>\n"
-    "      </HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Sorry!  ->  </HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Best guess  ->  </HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>The fun part :-)  ->  </HEADER_LEVEL1>\n"
     "    </CASEB>\n"
     "  </STRUCTURE>\n\n"
     "  <FINAL_REMARKS>\n"
@@ -92,24 +90,71 @@ BASE_DEFAULT_PROMPT = (
 # Must be the first Streamlit command
 st.set_page_config(page_title="RAG User View", layout="wide")
 
-# Authentication functions
+# Shared user functions
 def load_users():
     user_file = Path("users.json")
     if not user_file.exists():
-        return {"admin": "admin"}  # Default admin account
+        return {"admin": "admin"}
     return json.loads(user_file.read_text())
+
+def save_users(users_dict):
+    Path("users.json").write_text(json.dumps(users_dict))
 
 def verify_login(username, password):
     users = load_users()
     return username in users and users[username] == password
+
+def create_account(username, password):
+    users = load_users()
+    if username in users:
+        return False, "User already exists."
+    users[username] = password
+    save_users(users)
+    return True, "Account created successfully."
 
 def create_user_session():
     if 'user_id' not in st.session_state:
         st.session_state.user_id = None
         st.session_state.is_authenticated = False
 
+create_user_session()
+
+# --- Login Interface ---
+if not st.session_state.is_authenticated:
+    st.header("Login Required")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if verify_login(username, password):
+            st.session_state.user_id = username
+            st.session_state.is_authenticated = True
+            st.rerun()  # Refreshes the page automatically
+        else:
+            st.error("Invalid credentials")
+    with st.expander("Create an Account"):
+        new_username = st.text_input("New Username")
+        new_password = st.text_input("New Password", type="password")
+        if st.button("Create Account"):
+            success, msg = create_account(new_username, new_password)
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
+    st.stop()  # Do not display further content until logged in
+
+# --- Logout Button in Sidebar ---
+if st.sidebar.button("Logout", key="logout_button"):
+    st.session_state.user_id = None
+    st.session_state.is_authenticated = False
+    st.rerun()  # or st.experimental_rerun() depending on your Streamlit version
+
+st.sidebar.success(f"Logged in as {st.session_state.user_id}")
+
+
+##############################################################################
+# 2) DIRECTORY PERSISTENCE
+##############################################################################
 def load_selected_directory() -> str:
-    """Load the persisted directory from file, or return the current working directory."""
     file_path = "selected_directory.txt"
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
@@ -119,9 +164,7 @@ def load_selected_directory() -> str:
     return os.getcwd()
 
 def save_selected_directory(directory: str):
-    """Persist the selected directory to file."""
-    file_path = "selected_directory.txt"
-    with open(file_path, "w") as f:
+    with open("selected_directory.txt", "w") as f:
         f.write(directory)
 
 def list_subfolders(path: str):
@@ -132,36 +175,6 @@ def list_subfolders(path: str):
         return subfolders
     except Exception:
         return []
-
-def build_directory_browser():
-    # If the browser path is not in session state, load the persisted directory.
-    if "browse_path" not in st.session_state:
-        st.session_state.browse_path = load_selected_directory()
-
-    st.sidebar.markdown("**Directory Browser**")
-    st.sidebar.write(f"Current: `{st.session_state.browse_path}`")
-
-    subs = list_subfolders(st.session_state.browse_path)
-    if subs:
-        choice = st.sidebar.selectbox("Subfolders", options=["(Select a folder)"] + subs)
-        if choice != "(Select a folder)":
-            if st.sidebar.button("Go to Subfolder"):
-                st.session_state.browse_path = os.path.join(st.session_state.browse_path, choice)
-    else:
-        st.sidebar.write("No subfolders here.")
-
-    if st.sidebar.button("Go Up One Level"):
-        parent = os.path.dirname(st.session_state.browse_path)
-        if parent and os.path.isdir(parent):
-            st.session_state.browse_path = parent
-
-    if st.sidebar.button("Set as Chroma Folder"):
-        st.session_state["chroma_folder"] = st.session_state.browse_path
-        save_selected_directory(st.session_state.browse_path)
-        st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
-
-# Initialize session state
-create_user_session()
 
 def get_user_specific_directory(user_id: str) -> dict:
     """
@@ -238,27 +251,10 @@ def set_openai_api_key(api_key: str):
         return None
 
 # Update the OpenAIEmbeddingFunction class
-class OpenAIEmbeddings:
-    """
-    **Definition:** Helper class that wraps the embeddings API call using our custom OpenAI client.
-    """
-    def __init__(self, client):
-        self.client = client
-
-    def create(self, input, model):
-        payload = {
-            "input": input,
-            "model": model
-        }
-        response = self.client.session.post(f"{self.client.base_url}/embeddings", json=payload)
-        if response.status_code != 200:
-            raise Exception(f"Error generating embeddings: {response.status_code}\nResponse: {response.text}")
-        return response.json()
-
 class OpenAI:
     """
-    **Definition:** Minimal HTTP client for OpenAI API calls. Accepts an optional `api_key`.
-    If not provided, it reads the key from `st.session_state`.
+    Minimal HTTP client for OpenAI. Must define a .embeddings property so that
+    calls to `self.client.embeddings.create(...)` succeed.
     """
     def __init__(self, api_key=None):
         if api_key:
@@ -266,7 +262,7 @@ class OpenAI:
         elif "api_key" in st.session_state and st.session_state["api_key"]:
             self.api_key = st.session_state["api_key"].strip()
         else:
-            raise ValueError("OpenAI API key not provided. Please set it in the sidebar.")
+            raise ValueError("No API key provided.")
         self.base_url = "https://api.openai.com/v1"
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -274,6 +270,7 @@ class OpenAI:
 
     @property
     def embeddings(self):
+        """Expose an embeddings property that calls the embeddings endpoint via a helper class."""
         return OpenAIEmbeddings(self)
 
     def chat_completions_create(self, model, messages, max_tokens=1024, temperature=0.2):
@@ -285,58 +282,49 @@ class OpenAI:
             "max_tokens": max_tokens,
             "temperature": temperature
         }
-        response = self.session.post(f"{self.base_url}/chat/completions", json=payload)
-        if response.status_code != 200:
-            raise Exception(f"OpenAI API error: {response.status_code}\nResponse: {response.text}")
-        return response.json()
+        resp = self.session.post(f"{self.base_url}/chat/completions", json=payload)
+        if resp.status_code != 200:
+            raise Exception(f"OpenAI API error: {resp.status_code}\nResponse: {resp.text}")
+        return resp.json()
+
+class OpenAIEmbeddings:
+    def __init__(self, client):
+        self.client = client
+    def create(self, input, model):
+        payload = {"input": input, "model": model}
+        resp = self.client.session.post(f"{self.client.base_url}/embeddings", json=payload)
+        if resp.status_code != 200:
+            raise Exception(f"Error generating embeddings: {resp.status_code}\n{resp.text}")
+        return resp.json()
 
 class OpenAIEmbeddingFunction:
-    """
-    **Definition:** Wrapper that uses our OpenAI client to generate embeddings.
-    """
     def __init__(self, api_key):
         self.api_key = api_key.strip()
         self.client = OpenAI(api_key=self.api_key)
-    
     def __call__(self, input):
-        # Ensure the input is a list
         if not isinstance(input, list):
             input = [input]
-        # (Optional) You could sanitize texts here if needed
-        sanitized_texts = [text for text in input]
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Generating embeddings for {len(sanitized_texts)} texts")
-            st.write(f"DEBUG => First text preview: {sanitized_texts[0][:100] if sanitized_texts else 'None'}")
         try:
             response = self.client.embeddings.create(
-                input=sanitized_texts,
+                input=input,
                 model="text-embedding-3-large"
             )
-            embeddings = [item["embedding"] for item in response["data"]]
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Generated {len(embeddings)} embeddings")
-                if embeddings:
-                    st.write(f"DEBUG => Embedding dimension: {len(embeddings[0])}")
-            return embeddings
+            return [item["embedding"] for item in response["data"]]
         except Exception as e:
             st.error(f"Error generating embeddings: {e}")
             return None
-
-    def __hash__(self):
-        return int(hashlib.md5(self.api_key.encode('utf-8')).hexdigest(), 16)
-    
-    def __eq__(self, other):
-        return isinstance(other, OpenAIEmbeddingFunction) and self.api_key == other.api_key
+    @property
+    def embeddings(self):
+        return OpenAIEmbeddings(self.client)
 
 # =======================
 # 2) LLMCountryDetector
 # =======================
 class LLMCountryDetector:
     """
-    This version matches the main app's complete logic. It instructs the LLM to be
-    extra careful about partial words or spurious alpha-2 codes that appear
-    inside normal text. The fallback also checks if uppercase or recognized
-    synonyms exist to confirm a valid country code.
+    This version ensures that all results — from JSON parsing OR regex fallback — go
+    through the same short-word checks in _deduplicate_and_validate. If the LLM says
+    {"detected_phrase": "the", "code": "CD"}, that gets caught and skipped.
     """
 
     SYSTEM_PROMPT = """
@@ -345,68 +333,67 @@ class LLMCountryDetector:
 
         1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
            - Extract only 2-letter codes in uppercase form like "CH", "US", "CN", "DE", etc.
-           - Only do so when they appear as separate tokens or clearly indicated as a code,
-             never as part of an unrelated word. For instance, "as" in lowercase or within "basic"
-             does NOT map to "AS". 
-           - If a code is recognized as ISO alpha2 for a real country or territory, keep it.
+           - Only do so when they appear as separate tokens, never as part of an unrelated word.
+           - If recognized code is alpha2 in pycountry, keep it.
 
-        2. FULL COUNTRY NAMES (and typical adjectives):
+        2. FULL COUNTRY NAMES / ADJECTIVES:
            - "Switzerland", "Swiss", "United States", "American", "China", "Chinese", etc.
-           - If you see synonyms or well-known abbreviations for real countries (like "USA" -> "US"),
-             you must transform them into their correct 2-letter code (e.g. "USA" => "US").
+           - If synonyms or known abbreviations (e.g. "USA" -> "US") appear, transform them.
 
         3. COMMON ABBREVIATIONS:
-           - "PRC" => "CN"
-           - "BRD" => "DE"
-           - "UK"  => "GB"
+           - "PRC" => "CN", "BRD" => "DE", "UK" => "GB", etc.
 
         4. CONTEXTUAL REFERENCES:
-           - "Swiss law" => "CH"
-           - "German regulations" => "DE"
-           - "Chinese market" => "CN"
+           - "Swiss law" => "CH", "German regulations" => "DE", "Chinese market" => "CN"
 
         EXTREMELY IMPORTANT:
-        - You MUST catch all real uppercase 2-letter ISO codes that appear as separate tokens.
-        - You MUST NOT guess if the substring doesn't match a real uppercase code, or if it's just part of
-          an ordinary lowercase word like "as" in "as of now." That should NOT become "AS."
+        - If a substring is short (e.g., "the", "to") or not uppercase, skip it.
+        - Only keep 2-letter uppercase codes if truly valid alpha2. 
         - If in doubt, skip it.
 
-        Output format must be EXACT JSON (no extra text), for example:
+        Output EXACT JSON like:
         [
-            {"detected_phrase": "exact text found", "code": "XX"}
+            {"detected_phrase": "DE", "code": "DE"}
         ]
-
-        That is your only response. Do not add explanations or commentary.
+        Do not add commentary or extra text.
     """.strip()
 
     def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
-        """
-        Initialize with the same OpenAI client code used in the main app,
-        ensuring that st.session_state["api_key"] is set.
-        """
-        # Import the custom OpenAI client from your code. (Assuming "OpenAI" is defined with chat_completions_create)
-        # e.g. from user_view import OpenAI
         if "api_key" not in st.session_state or not st.session_state["api_key"]:
             raise ValueError("No API key in session for LLMCountryDetector.")
-        self.client = OpenAI(api_key=api_key)  # Uses your custom OpenAI class
+        self.client = OpenAI(api_key=api_key)
         self.model = model
 
     def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Core detection logic:
-         1. Calls the LLM with the specialized system prompt.
-         2. Tries to parse the response as JSON.
-         3. If that fails or yields empty results, does fallback "naive_pycountry_detection."
-         4. Removes duplicates, skipping partial words that are not uppercase codes.
-        """
-        if DEBUG_MODE:
-            st.write(f"DEBUG => detect_countries_in_text called with text='{text[:100]}'...")
-
+        """One unified function that calls the LLM, tries JSON parse, 
+           then regex parse, then fallback. ALL results get validated."""
         if not text.strip():
             return []
 
+        # 1) Attempt LLM-based detection
+        raw_content = self._call_llm(text)
+
+        # 2) Try JSON parse
+        raw_results = self._try_json(raw_content)
+        if raw_results:
+            validated = self._deduplicate_and_validate(raw_results)
+            if validated:
+                return validated
+        
+        # 3) Try regex parse
+        regex_pairs = self._extract_via_regex(raw_content)
+        if regex_pairs:
+            validated = self._deduplicate_and_validate(regex_pairs)
+            if validated:
+                return validated
+
+        # 4) Fallback
+        fallback_raw = self.naive_pycountry_detection(text)
+        return self._deduplicate_and_validate(fallback_raw)
+
+    def _call_llm(self, text: str) -> str:
+        """Calls the LLM with our SYSTEM_PROMPT, returns raw content string."""
         try:
-            # Step 1: LLM-based detection
             response = self.client.chat_completions_create(
                 model=self.model,
                 messages=[
@@ -416,168 +403,127 @@ class LLMCountryDetector:
                 max_tokens=512,
                 temperature=0.0
             )
-            raw_content = response["choices"][0]["message"]["content"].strip()
-            if DEBUG_MODE:
-                st.write(f"DEBUG => LLM raw response: {raw_content}")
-
-            # Step 2: Clean any code fences that might appear
-            cleaned_content = re.sub(r'^```json\s*|\s*```$', '', raw_content)
-
-            try:
-                data = json.loads(cleaned_content)
-                if not isinstance(data, list):
-                    if DEBUG_MODE:
-                        st.write("DEBUG => JSON response was not a list, fallback triggered.")
-                    data = []
-                results = self._deduplicate_and_validate(data)
-                if DEBUG_MODE:
-                    st.write(f"DEBUG => LLM-based results => {results}")
-
-                # Step 3: Fallback if no results
-                if not results:
-                    fallback_codes = self.naive_pycountry_detection(text)
-                    if fallback_codes and DEBUG_MODE:
-                        st.write(f"DEBUG => naive fallback => {fallback_codes}")
-                    results = fallback_codes
-
-                return results
-
-            except json.JSONDecodeError as e:
-                # Step 2B: If JSON parse fails, try regex or fallback
-                if DEBUG_MODE:
-                    st.write(f"DEBUG => JSON parse error: {e}")
-                regex_results = self._extract_via_regex(cleaned_content)
-                if regex_results:
-                    return regex_results
-                # If still empty, fallback
-                fallback_codes = self.naive_pycountry_detection(text)
-                if fallback_codes and DEBUG_MODE:
-                    st.write(f"DEBUG => fallback after JSON parse error => {fallback_codes}")
-                return fallback_codes
-
+            return response["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            # If LLM call fails, fallback
-            if DEBUG_MODE:
-                st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
-            return self.naive_pycountry_detection(text)
+            # If LLM fails, return empty
+            return ""
+
+    def _try_json(self, raw_content: str) -> List[Dict[str, str]]:
+        """Attempt to parse raw_content as JSON. Return list of dicts or [] if parse fails."""
+        # Remove ```json fences if any
+        cleaned = re.sub(r'^```json\s*|\s*```$', '', raw_content)
+        try:
+            data = json.loads(cleaned)
+            if not isinstance(data, list):
+                return []
+            # Convert to { "detected_phrase": ..., "code": ... } dicts
+            results = []
+            for item in data:
+                phrase = item.get("detected_phrase", "")
+                code = item.get("code", "")
+                results.append({"detected_phrase": phrase, "code": code})
+            return results
+        except json.JSONDecodeError:
+            return []
 
     @staticmethod
-    def _extract_via_regex(text: str) -> List[Dict[str, str]]:
-        """
-        Attempts naive extraction from a well-formed JSON snippet
-        or lines like:
-          {"detected_phrase": "DE", "code": "DE"}, ...
-        """
+    def _extract_via_regex(raw_content: str) -> List[Dict[str, str]]:
+        """Attempt naive regex parse of lines like {"detected_phrase": "...", "code": "..."}."""
         matches = re.findall(
             r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
-            text
+            raw_content
         )
+        # Return raw pairs
         results = []
-        used_codes = set()
         for phrase, code in matches:
-            code_up = code.upper()
-            if code_up not in used_codes and len(code_up) == 2:
-                results.append({"detected_phrase": phrase, "code": code_up})
-                used_codes.add(code_up)
-        return results
-
-    @staticmethod
-    def _deduplicate_and_validate(data: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        """
-        Validate each item, ensuring:
-          - code is exactly 2 uppercase letters
-          - phrase is non-empty
-        Then deduplicate by code.
-        """
-        used = set()
-        results = []
-        for item in data:
-            code = item.get("code", "").upper()
-            phrase = item.get("detected_phrase", "").strip()
-            if len(code) == 2 and code.isalpha() and phrase:
-                # e.g., "AS" is a valid alpha2 => American Samoa
-                # But skip if it's just partial-lowercase unless user typed uppercase
-                # The LLM prompt tries to avoid that scenario in the first place.
-                if code not in used:
-                    results.append({"detected_phrase": phrase, "code": code})
-                    used.add(code)
+            results.append({"detected_phrase": phrase.strip(), "code": code.strip()})
         return results
 
     @staticmethod
     def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
-        """
-        Fallback method if the LLM response is empty or invalid.
-        1) Scans for uppercase 2-letter tokens or known synonyms (USA -> US, etc.).
-        2) Checks for real alpha2 code in pycountry.
-        3) Scans for country names or adjectives that can be mapped back to alpha2 codes.
-        """
-        found_codes = []
-        used_codes = set()
+        """Fallback method if LLM-based logic is empty."""
+        found = []
+        used = set()
 
-        # --- 1) Look for uppercase 2-letter tokens only ---
-        # We'll skip purely lowercase ones to avoid "as" -> "AS" from partial text
-        uppercase_2letters = re.findall(r'\b[A-Z]{2}\b', text)
-        for w in uppercase_2letters:
-            country = pycountry.countries.get(alpha_2=w)
-            if country and w not in used_codes:
-                found_codes.append({"detected_phrase": w, "code": w})
-                used_codes.add(w)
+        # 1) Look for uppercase 2-letter tokens
+        tokens = re.findall(r'\b[A-Z]{2}\b', text)
+        for t in tokens:
+            cinfo = pycountry.countries.get(alpha_2=t)
+            if cinfo and t not in used:
+                found.append({"detected_phrase": t, "code": t})
+                used.add(t)
 
-        # --- 2) Common synonyms or abbreviations like "USA", "UK" => map them to alpha2
-        special_map = {
-            "USA": "US",
-            "UK": "GB",
-            "BRD": "DE",
-            "PRC": "CN"
-        }
-        # We'll do a regex search for these synonyms
+        # 2) Common synonyms
+        special_map = {"USA": "US", "UK": "GB", "BRD": "DE", "PRC": "CN"}
         for abbr, alpha2 in special_map.items():
             pattern = re.compile(rf'\b{abbr}\b', re.IGNORECASE)
             if pattern.search(text):
-                # Add code if not in used
-                if alpha2 not in used_codes:
-                    found_codes.append({"detected_phrase": abbr, "code": alpha2})
-                    used_codes.add(alpha2)
+                if alpha2 not in used:
+                    found.append({"detected_phrase": abbr, "code": alpha2})
+                    used.add(alpha2)
 
-        # --- 3) Finally, parse country names or adjectives (like "Switzerland", "Swiss")
-        # This is partial, but may help if the user typed "China" => "CN"
-        # We won't implement full logic here, but you could. For example:
+        # 3) Attempt partial name detection
         name_tokens = re.findall(r'\b[A-Za-z]+(?:ian|ish|ese|)?\b', text)
         for token in name_tokens:
             token_up = token.capitalize()
-            # Attempt direct match in pycountry
             for c in pycountry.countries:
                 if token_up in c.name:
                     iso2 = c.alpha_2
-                    if iso2 not in used_codes:
-                        found_codes.append({"detected_phrase": token, "code": iso2})
-                        used_codes.add(iso2)
+                    if iso2 not in used:
+                        found.append({"detected_phrase": token, "code": iso2})
+                        used.add(iso2)
                     break
+        return found
 
-        return found_codes
-
-    def detect_first_country_in_text(self, text: str):
+    @staticmethod
+    def _deduplicate_and_validate(data_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        Helper: returns the first detection if any exist, else None.
+        Additional rules:
+        - If phrase < 4 chars, must be 2 uppercase letters -> valid alpha2 code
+        - Otherwise normal logic -> code must be 2 uppercase letters -> valid alpha2
         """
-        all_codes = self.detect_countries_in_text(text)
-        return all_codes[0] if all_codes else None
+        used = set()
+        final = []
+        for item in data_list:
+            phrase = (item.get("detected_phrase") or "").strip()
+            code = (item.get("code") or "").strip().upper()
 
+            if not phrase or not code:
+                continue
+
+            if len(phrase) < 4:
+                # Must be exactly 2 uppercase letters
+                if len(phrase) == 2 and phrase.isalpha() and phrase == phrase.upper():
+                    if code == phrase:
+                        cinfo = pycountry.countries.get(alpha_2=code)
+                        if cinfo and code not in used:
+                            final.append({"detected_phrase": phrase, "code": code})
+                            used.add(code)
+                # else skip
+            else:
+                # phrase >= 4 => if code is 2 uppercase letters -> check alpha2
+                if len(code) == 2 and code.isalpha():
+                    cinfo = pycountry.countries.get(alpha_2=code)
+                    if cinfo and code not in used:
+                        final.append({"detected_phrase": phrase, "code": code})
+                        used.add(code)
+
+        return final
 
 # =======================
 # 4) get_chroma_client
 # =======================
 def get_chroma_client():
-    if not st.session_state.get("user_id"):
-        st.error("Please log in first")
+    if not st.session_state.get("chroma_folder"):
+        st.warning("No Chroma DB folder is set. Use the directory browser in the sidebar.")
         return None
     if not st.session_state.get("api_key"):
-        st.error("Please set your OpenAI API key")
+        st.error("Please set your OpenAI API key first.")
         return None
     try:
-        dirs = get_user_specific_directory(st.session_state["user_id"])
+        # The user-chosen folder is in st.session_state["chroma_folder"]
         client = chromadb.PersistentClient(
-            path=dirs["chroma"],
+            path=st.session_state["chroma_folder"],
             settings=Settings(
                 anonymized_telemetry=False,
                 allow_reset=True
@@ -588,17 +534,17 @@ def get_chroma_client():
         st.error(f"Error initializing ChromaDB client: {str(e)}")
         return None
 
-def get_collection(collection_name: str):
-    client = get_chroma_client()
-    if not client:
+def get_collection(collection_name="rag_collection"):
+    c = get_chroma_client()
+    if not c:
         return None
     try:
         embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
-        collection = client.get_collection(
+        coll = c.get_collection(
             name=collection_name,
             embedding_function=embedding_function
         )
-        return collection
+        return coll
     except Exception as e:
         st.error(f"Error accessing collection: {str(e)}")
         return None
@@ -772,11 +718,13 @@ def query_and_get_answer():
             messages=messages,
             temperature=0.0
         )
-        answer = completion["choices"][0]["message"]["content"]
+        # after you get 'answer'
+        answer_raw = completion["choices"][0]["message"]["content"]
+        # strip any <HEADER_LEVEL1> or similar tags
+        answer_clean = re.sub(r"<[^>]*>", "", answer_raw)
 
-        # --- DISPLAY THE ANSWER ---
         st.markdown("### Answer")
-        st.write(answer)
+        st.write(answer_clean)
 
         if DEBUG_MODE:
             st.markdown("### Debug: Retrieved Passages")
@@ -829,30 +777,42 @@ def list_subfolders(path: str):
     except Exception:
         return []
 
+# 1) The function itself
 def build_directory_browser():
+    # If the user hasn't loaded a path or set a folder yet, do so now.
     if "browse_path" not in st.session_state:
-        st.session_state.browse_path = os.getcwd()
+        st.session_state["browse_path"] = load_selected_directory()
+        # Immediately set chroma_folder to the loaded path
+        st.session_state["chroma_folder"] = st.session_state["browse_path"]
 
-    st.sidebar.markdown("**Directory Browser**")
-    st.sidebar.write(f"Current: `{st.session_state.browse_path}`")
+    # Create a single container in the sidebar so the UI appears once.
+    with st.sidebar.container():
+        st.markdown("**Directory Browser**")
+        st.write(f"Current: `{st.session_state.browse_path}`")
 
-    subs = list_subfolders(st.session_state.browse_path)
-    if subs:
-        choice = st.sidebar.selectbox("Subfolders", options=["(Select a folder)"] + subs)
-        if choice != "(Select a folder)":
-            if st.sidebar.button("Go to Subfolder"):
+        subs = list_subfolders(st.session_state.browse_path)
+
+        # We'll use stable widget keys (no path-based suffix) to avoid duplicates
+        choice = st.selectbox(
+            "Subfolders",
+            options=["(Select a folder)"] + subs,
+            key="subfolder_selectbox"
+        )
+        if subs and choice != "(Select a folder)":
+            if st.button("Go to Subfolder", key="go_subfolder_button"):
                 st.session_state.browse_path = os.path.join(st.session_state.browse_path, choice)
-    else:
-        st.sidebar.write("No subfolders here.")
+                st.session_state["chroma_folder"] = st.session_state.browse_path
 
-    if st.sidebar.button("Go Up One Level"):
-        parent = os.path.dirname(st.session_state.browse_path)
-        if parent and os.path.isdir(parent):
-            st.session_state.browse_path = parent
+        if st.button("Go Up One Level", key="go_up_button"):
+            parent = os.path.dirname(st.session_state.browse_path)
+            if parent and os.path.isdir(parent):
+                st.session_state.browse_path = parent
+                st.session_state["chroma_folder"] = st.session_state.browse_path
 
-    if st.sidebar.button("Set as Chroma Folder"):
-        st.session_state["chroma_folder"] = st.session_state.browse_path
-        st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
+        if st.button("Set as Chroma Folder", key="set_chroma_folder_button"):
+            st.session_state["chroma_folder"] = st.session_state.browse_path
+            save_selected_directory(st.session_state.browse_path)
+            st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
 
 # =======================
 # 8) MAIN UI (No login)
@@ -868,16 +828,16 @@ def main():
         st.session_state.api_key = None
 
     with st.sidebar:
-        # Only one API key textbox is now shown.
         api_key = st.text_input("OpenAI API Key", type="password")
         if api_key:
             try:
-                # Initialize the OpenAI client (using our custom client defined elsewhere)
-                client = OpenAI(api_key=api_key)
+                # Attempt to verify the key using your custom OpenAI class
+                client = OpenAI(api_key=api_key)  # <-- Make sure OpenAI is defined in your code
                 st.session_state.api_key = api_key
                 st.success("API key set successfully!")
             except Exception as e:
                 st.error(f"Error initializing OpenAI client: {e}")
+
 
     # Directory Browser
     build_directory_browser()
@@ -915,84 +875,91 @@ def main():
             except Exception as e:
                 st.sidebar.error(f"Error accessing ChromaDB: {str(e)}")
 
-    st.image("https://placehold.co/150x60?text=Your+Logo", use_container_width=True)
-    st.title("Simple RAG UI (No Login)")
-    st.write("Enter your API key, pick a folder with your Chroma DB, then ask a question.")
+    st.image("https://brandpulse.ch/wp-content/uploads/2024/02/0_BP_Victorinox_Case-Study-2000x800.png", use_container_width=True)
+    st.title("Knife Legislation Expert")
+    # st.write("Enter your API key, pick a folder with your Chroma DB, then ask a question.")
 
     # --- Input the user's question (bound to session state key "question") ---
-    st.text_input("Your question:", key="question")
-
+    st.text_input(
+        "Your question:", 
+        key="question", 
+        help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ...")
     # --- Primary "Get Answer" Button ---
     if st.button("Get Answer"):
         query_text = st.session_state.get("question", "")
-        if query_text.strip():
+        if not query_text.strip():
+            st.warning("Please enter a question.")
+        else:
+            # 1) Run country detection
             try:
-                # Auto-launch country detection
                 detector = LLMCountryDetector(api_key=st.session_state["api_key"])
-                detected_countries = detector.detect_countries_in_text(query_text)
-                if detected_countries:
-                    # Concatenate detected country codes
-                    country_list = ", ".join([d["code"] for d in detected_countries])
+                detected_list = detector.detect_countries_in_text(query_text)
+            except Exception as e:
+                st.error(f"Error during country detection: {e}")
+                detected_list = []
+
+            # 2) Show a nice globe with user term vs. identified country ISO
+            if detected_list:
+                st.write("🌍 **You seem to request legal information for the following countries:**")
+                for item in detected_list:
+                    # e.g. "'Switzerland' -> CH"
+                    st.write(f"  • '{item['detected_phrase']}' → {item['code']}")
+            else:
+                st.write("❌ No country codes detected in query")
+
+            # 3) Build the system prompt
+            if detected_list:
+                c_str = ", ".join([d["code"] for d in detected_list])
+            else:
+                c_str = "None"
+            system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected countries: {c_str}"
+
+            # 4) Query the rag_collection
+            coll = get_collection("rag_collection")
+            if not coll:
+                st.error("No ChromaDB collection available. Check your folder or API key.")
+            else:
+                results = coll.query(
+                    query_texts=[query_text],
+                    n_results=5,
+                    include=["documents", "metadatas"]
+                )
+                if not results or not results.get("documents"):
+                    st.warning("No relevant documents found.")
                 else:
-                    country_list = "None"
-                if DEBUG_MODE:
-                    st.write(f"DEBUG => Countries detected: {country_list}")
+                    passages = results["documents"][0]
+                    metadata = results["metadatas"][0]
+                    context = "\n\n".join(passages)
 
-                # Build the system prompt using the base prompt and detected countries
-                system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected Countries in Query: {country_list}"
+                    # 5) Use GPT to formulate the final answer
+                    messages = []
+                    messages.append({"role": "system", "content": system_message})
+                    messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query_text}"})
 
-                # Query the collection for relevant documents
-                collection = get_collection("rag_collection")
-                if not collection:
-                    st.error("Could not access collection")
-                else:
-                    results = collection.query(
-                        query_texts=[query_text],
-                        n_results=5,
-                        include=["documents", "metadatas"]
-                    )
-                    if not results or not results.get("documents"):
-                        st.warning("No relevant documents found")
-                    else:
-                        passages = results["documents"][0]
-                        metadata = results["metadatas"][0] if "metadatas" in results else []
-
-                        # Build messages for the LLM call
-                        messages = []
-                        messages.append({
-                            "role": "system",
-                            "content": system_message
-                        })
-                        context = "\n\n".join(passages)
-                        messages.append({
-                            "role": "user",
-                            "content": f"Context:\n{context}\n\nQuestion: {query_text}"
-                        })
-
-                        # Call the updated OpenAI client to generate an answer
+                    try:
                         client = OpenAI(api_key=st.session_state["api_key"])
                         completion = client.chat_completions_create(
                             model="gpt-4",
                             messages=messages,
                             temperature=0.0
                         )
-                        answer = completion["choices"][0]["message"]["content"]
+                        # after you get 'answer'
+                        answer_raw = completion["choices"][0]["message"]["content"]
+                        # strip any <HEADER_LEVEL1> or similar tags
+                        answer_clean = re.sub(r"<[^>]*>", "", answer_raw)
 
-                        # Display the answer
                         st.markdown("### Answer")
-                        st.write(answer)
-                        
+                        st.write(answer_clean)
+
                         if DEBUG_MODE:
                             st.markdown("### Debug: Retrieved Passages")
-                            for i, (passage, meta) in enumerate(zip(passages, metadata)):
-                                st.markdown(f"**Passage {i+1}:**")
-                                st.write(passage)
-                                st.write(f"Metadata: {meta}")
+                            for i, (p, m) in enumerate(zip(passages, metadata)):
+                                st.markdown(f"**Passage {i+1}**:")
+                                st.write(p)
+                                st.write(f"Metadata: {m}")
 
-            except Exception as e:
-                st.error(f"Error generating answer: {e}")
-        else:
-            st.warning("Please enter a question above.")
+                    except Exception as e:
+                        st.error(f"Error generating final answer: {e}")
 
 if __name__ == "__main__":
     main()
