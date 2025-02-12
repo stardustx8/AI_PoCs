@@ -32,31 +32,29 @@ BASE_DEFAULT_PROMPT = (
     "    1. Always rely exclusively on the RAG documents for any factual information.\n\n"
     "    2. EXTREMELY IMPORTANT:\n"
     "       - If the user’s query relates to **only one** country and your RAG does **not** have matching information\n"
-    "         for that country, you must use the **CASEB** structure.\n"
-    "       - If the user’s query references **multiple** countries, you must still present a **CASEA** structure for\n"
+    "         for that country, you must use the **CASEB** structure (but do NEVER mention 'CASEB' as a term to the user, as this is only for your internal referencing.) .\n"
+    "       - If the user’s query references **multiple** countries, you must still present a **CASEA** structure (but do NEVER mention 'CASEA' as a term to the user, as this is only for your internal referencing.) for\n"
     "         each country you do have data on. For any country **not** found in the RAG documents, strictly state\n"
     "         \"No information in my documents.\" instead of presenting partial data.\n\n"
-    "    3. When the user explicitly asks for help, your response must start with a **High-Level, Concise\n"
-    "       'Instructions to Action'** section drawn directly from the doc (e.g., \"If x > y, then do z...\").\n\n"
-    "    4. Follow with a **TL;DR Summary** in bullet points (again, only using doc-based content). Emphasize crucial\n"
+    "    3. Your response must start with a **TL;DR Summary** in bullet points (again, only using doc-based content). Emphasize crucial\n"
     "       numerical thresholds or legal references in **bold**, and any important nuance in *italics*.\n\n"
-    "    5. Next, provide a **Detailed Explanation** that remains strictly grounded in the RAG documents. If helpful,\n"
+    "    4. Next, provide a **Detailed Explanation** that remains strictly grounded in the RAG documents. If helpful,\n"
     "       include a *brief scenario* illustrating how these doc-based rules might apply.\n\n"
-    "    6. Conclude with an **'Other References'** section, where you may optionally add clarifications or knowledge\n"
+    "    5. Conclude with an **'Other References'** section, where you may optionally add clarifications or knowledge\n"
     "       beyond the doc but **label it** as external info. Any statutory references should appear in square brackets,\n"
     "       e.g., [Section 1, Paragraph 2].\n\n"
-    "    7. If the user’s query **cannot** be answered with information from the RAG documents (meaning you have\n"
+    "    6. If the user’s query **cannot** be answered with information from the RAG documents (meaning you have\n"
     "       **zero** coverage for that country or topic), you must switch to **CASEB**, which requires:\n"
     "       - A large \"Sorry!\" header: \"The uploaded document states nothing relevant...\"\n"
     "       - A large \"Best guess\" header: attempt an interpretation, clearly flagged as conjecture.\n"
     "       - A final large header in **red**, titled \"The fun part :-)\".\n"
     "         Provide a sarcastic or lighthearted\n"
     "         reflection (with emojis) about the query.\n\n"
-    "    8. In all doc-based sections, stick strictly to the RAG documents (no external knowledge), keep your\n"
+    "    7. In all doc-based sections, stick strictly to the RAG documents (no external knowledge), keep your\n"
     "       professional or academically rigorous style, and preserve **bold** for pivotal references and *italics*\n"
     "       for nuance.\n\n"
-    "    9. Always respond in the user’s initial query language, unless otherwise instructed.\n\n"
-    "    10. Present your final output in normal text (headings in large text as described), **never** in raw XML.\n"
+    "    8. Always respond in the user’s initial query language, unless otherwise instructed.\n\n"
+    "    9. Present your final output in normal text (headings in large text as described), **never** in raw XML.\n"
     "  </INSTRUCTIONS>\n\n"
     "  <STRUCTURE>\n"
     "    <REMARKS_TO_STRUCTURE>\n"
@@ -65,7 +63,6 @@ BASE_DEFAULT_PROMPT = (
     "    <!-- Two possible final output scenarios -->\n\n"
     "    <!-- Case A: Document-based answer (available info) -->\n"
     "    <CASEA>\n"
-    "      <HEADER_LEVEL1>Instructions to Action  ->  </HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>TL;DR Summary  ->  </HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>Detailed Explanation  ->  </HEADER_LEVEL1>\n"
     "      <HEADER_LEVEL1>Other References  ->  </HEADER_LEVEL1>\n"
@@ -338,10 +335,12 @@ class LLMCountryDetector:
 
         2. FULL COUNTRY NAMES / ADJECTIVES:
            - "Switzerland", "Swiss", "United States", "American", "China", "Chinese", etc.
+           - Futher advanced morphologies
            - If synonyms or known abbreviations (e.g. "USA" -> "US") appear, transform them.
 
         3. COMMON ABBREVIATIONS:
            - "PRC" => "CN", "BRD" => "DE", "UK" => "GB", etc.
+           - "helve" => "CH", "helvetia" => "CH", "helvetien" => "CH", "allemania" => "DE", "alemannä" => "DE", and analogoues for other countries and their historic namings
 
         4. CONTEXTUAL REFERENCES:
            - "Swiss law" => "CH", "German regulations" => "DE", "Chinese market" => "CN"
@@ -349,7 +348,6 @@ class LLMCountryDetector:
         EXTREMELY IMPORTANT:
         - If a substring is short (e.g., "the", "to") or not uppercase, skip it.
         - Only keep 2-letter uppercase codes if truly valid alpha2. 
-        - If in doubt, skip it.
 
         Output EXACT JSON like:
         [
@@ -358,7 +356,7 @@ class LLMCountryDetector:
         Do not add commentary or extra text.
     """.strip()
 
-    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: str, model: str = "chatgpt-4o-latest"):
         if "api_key" not in st.session_state or not st.session_state["api_key"]:
             raise ValueError("No API key in session for LLMCountryDetector.")
         self.client = OpenAI(api_key=api_key)
@@ -401,7 +399,7 @@ class LLMCountryDetector:
                     {"role": "user", "content": text}
                 ],
                 max_tokens=512,
-                temperature=0.0
+                temperature=0.2
             )
             return response["choices"][0]["message"]["content"].strip()
         except Exception as e:
@@ -570,70 +568,53 @@ def query_collection(query: str, collection_name: str):
     except Exception as e:
         st.error(f"Error querying collection: {e}")
         return None
-    
-# =======================
-# 5) query_chroma_for_countries
-# =======================
-def query_chroma_for_countries(query: str, collection_name="rag_collection", n_results=10):
-    if DEBUG_MODE:
-        st.write(f"DEBUG => query_chroma_for_countries -> query='{query}' collection='{collection_name}'")
-    detector = LLMCountryDetector()
-    detected = detector.detect_countries_in_text(query)
-    codes = [d["code"] for d in detected]
-    client = get_chroma_client()
-    if client:
-        try:
-            collection = client.get_collection(
-                name=collection_name,
-                embedding_function=OpenAIEmbeddingFunction(st.session_state["api_key"])
-            )
-            if DEBUG_MODE:
-                st.write(f"DEBUG => got collection '{collection_name}'")
-                
-            # Add validation
-            test_results = collection.peek()
-            if DEBUG_MODE and test_results:
-                st.write(f"DEBUG => Collection has {len(test_results['ids'])} documents")
-                
-        except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Error accessing collection: {str(e)}")
-            collection = None
 
-    all_docs = collection.get()
-    all_metadata = all_docs.get("metadatas", [])
-    available_countries = set()
-    for m in all_metadata:
-        if m and "country_code" in m:
-            available_countries.add(m["country_code"])
+def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
+    """
+    1) For each ISO code in iso_codes, do a strict filter query where={"country_code": code}.
+    2) Merge the top passages from each code into a single list.
+    3) Return (passages, metadatas).
+    """
+    coll = get_collection("rag_collection")
+    if not coll:
+        st.error("No ChromaDB collection found.")
+        return [], []
 
-    if DEBUG_MODE:
-        st.write(f"DEBUG => in collection '{collection_name}' => total docs={len(all_docs.get('ids', []))}, countries={available_countries}")
+    final_passages = []
+    final_metadatas = []
+    used_passages = set()
 
-    combined_passages = []
-    combined_metadata = []
-    seen_passages = set()
+    if not iso_codes:
+        # fallback => broad search if no codes detected
+        res = coll.query(
+            query_texts=[query_text],
+            n_results=n_results,
+            include=["documents", "metadatas"]
+        )
+        if res and res.get("documents"):
+            final_passages = res["documents"][0]
+            final_metadatas = res["metadatas"][0]
+        return final_passages, final_metadatas
 
-    if codes:
-        for code in codes:
-            st.write(f"DEBUG => searching for code='{code}' in where={{country_code: code}}")  # DEBUG ADDED
-            results = collection.query(query_texts=[query], where={"country_code": code}, n_results=n_results)
-            pass_list = results.get("documents", [[]])[0]
-            meta_list = results.get("metadatas", [[]])[0]
-            for p, md in zip(pass_list, meta_list):
-                key = code + p
-                if key not in seen_passages:
-                    combined_passages.append(p)
-                    combined_metadata.append(md)
-                    seen_passages.add(key)
-    else:
-        # fallback => broad search
-        st.write("DEBUG => no countries detected => broad search")  # DEBUG ADDED
-        results = collection.query(query_texts=[query], n_results=n_results)
-        combined_passages = results.get("documents", [[]])[0]
-        combined_metadata = results.get("metadatas", [[]])[0]
+    # If iso_codes exist, do separate queries for each code
+    for code in iso_codes:
+        # Strict filter => only chunks labeled with country_code == code
+        res = coll.query(
+            query_texts=[query_text],
+            where={"country_code": code},
+            n_results=n_results,
+            include=["documents", "metadatas"]
+        )
+        if res and res.get("documents"):
+            pass_list = res["documents"][0]
+            meta_list = res["metadatas"][0]
+            for p, m in zip(pass_list, meta_list):
+                if p not in used_passages:
+                    final_passages.append(p)
+                    final_metadatas.append(m)
+                    used_passages.add(p)
 
-    return combined_passages, combined_metadata
+    return final_passages, final_metadatas
 
 # =======================
 # 6) generate_answer
@@ -714,9 +695,9 @@ def query_and_get_answer():
         # --- CALL THE OPENAI CHAT API ---
         client = OpenAI(api_key=st.session_state["api_key"])
         completion = client.chat_completions_create(
-            model="gpt-4",
+            model="chatgpt-4o-latest",
             messages=messages,
-            temperature=0.0
+            temperature=0.2
         )
         # after you get 'answer'
         answer_raw = completion["choices"][0]["message"]["content"]
@@ -753,7 +734,7 @@ def generate_answer(query: str, passages, metadata):
     try:
         openai_client = OpenAI()
         resp = openai_client.chat_completions_create(
-            model="gpt-3.5-turbo",
+            model="chatgpt-4o-latest",
             messages=messages,
             max_tokens=1500,
             temperature=0.2
@@ -919,47 +900,45 @@ def main():
             if not coll:
                 st.error("No ChromaDB collection available. Check your folder or API key.")
             else:
-                results = coll.query(
-                    query_texts=[query_text],
-                    n_results=5,
-                    include=["documents", "metadatas"]
-                )
-                if not results or not results.get("documents"):
-                    st.warning("No relevant documents found.")
-                else:
-                    passages = results["documents"][0]
-                    metadata = results["metadatas"][0]
-                    context = "\n\n".join(passages)
+                # 1) Convert the detected_countries into a list of iso codes:
+                iso_codes = [d["code"] for d in detected_list]
 
-                    # 5) Use GPT to formulate the final answer
-                    messages = []
-                    messages.append({"role": "system", "content": system_message})
-                    messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query_text}"})
+                # 2) Retrieve strictly filtered chunks
+                passages, metadata = get_strict_filtered_passages(query_text, iso_codes, n_results=5)
 
-                    try:
-                        client = OpenAI(api_key=st.session_state["api_key"])
-                        completion = client.chat_completions_create(
-                            model="gpt-4",
-                            messages=messages,
-                            temperature=0.0
-                        )
-                        # after you get 'answer'
-                        answer_raw = completion["choices"][0]["message"]["content"]
-                        # strip any <HEADER_LEVEL1> or similar tags
-                        answer_clean = re.sub(r"<[^>]*>", "", answer_raw)
+                if not passages:
+                    st.warning("No relevant documents found with strict filtering.")
+                    return
 
-                        st.markdown("### Answer")
-                        st.write(answer_clean)
+                # 3) Build the final context for GPT
+                context = "\n\n".join(passages)
 
-                        if DEBUG_MODE:
-                            st.markdown("### Debug: Retrieved Passages")
-                            for i, (p, m) in enumerate(zip(passages, metadata)):
-                                st.markdown(f"**Passage {i+1}**:")
-                                st.write(p)
-                                st.write(f"Metadata: {m}")
+                messages = []
+                messages.append({"role": "system", "content": system_message})
+                messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query_text}"})
 
-                    except Exception as e:
-                        st.error(f"Error generating final answer: {e}")
+                try:
+                    client = OpenAI(api_key=st.session_state["api_key"])
+                    completion = client.chat_completions_create(
+                        model="chatgpt-4o-latest",
+                        messages=messages,
+                        temperature=0.2
+                    )
+                    answer_raw = completion["choices"][0]["message"]["content"]
+                    # Strip <...> tags
+                    answer_clean = re.sub(r"<[^>]*>", "", answer_raw)
+
+                    st.markdown("### Answer")
+                    st.write(answer_clean)
+
+                    if DEBUG_MODE:
+                        st.markdown("### Debug: Retrieved Passages")
+                        for i, (p, m) in enumerate(zip(passages, metadata)):
+                            st.markdown(f"**Passage {i+1}**:")
+                            st.write(p)
+                            st.write(f"Metadata: {m}")
+                except Exception as e:
+                    st.error(f"Error generating final answer: {e}")
 
 if __name__ == "__main__":
     main()
