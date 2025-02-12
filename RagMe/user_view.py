@@ -11,12 +11,83 @@ import chromadb
 from chromadb.config import Settings
 import hashlib
 import glob
+from typing import List, Dict, Any
 
 DEBUG_MODE = True  # <--- Ensure we have a global switch for debug
 
 
 from pathlib import Path
 import json
+
+##############################################################################
+# UNIFIED PROMPT DEFINITIONS
+##############################################################################
+BASE_DEFAULT_PROMPT = (
+    "  <ROLE>\n"
+    "    You are an extremely knowledgeable and helpful assistant. Respond to the user’s query **ONLY** by using\n"
+    "    the information available in the RAG documents. Always reason step-by-step. The user appreciates\n"
+    "    thorough, accurate results.\n"
+    "  </ROLE>\n\n"
+    "  <INSTRUCTIONS>\n"
+    "    1. Always rely exclusively on the RAG documents for any factual information.\n\n"
+    "    2. EXTREMELY IMPORTANT:\n"
+    "       - If the user’s query relates to **only one** country and your RAG does **not** have matching information\n"
+    "         for that country, you must use the **CASEB** structure.\n"
+    "       - If the user’s query references **multiple** countries, you must still present a **CASEA** structure for\n"
+    "         each country you do have data on. For any country **not** found in the RAG documents, strictly state\n"
+    "         \"No information in my documents.\" instead of presenting partial data.\n\n"
+    "    3. When the user explicitly asks for help, your response must start with a **High-Level, Concise\n"
+    "       'Instructions to Action'** section drawn directly from the doc (e.g., \"If x > y, then do z...\").\n\n"
+    "    4. Follow with a **TL;DR Summary** in bullet points (again, only using doc-based content). Emphasize crucial\n"
+    "       numerical thresholds or legal references in **bold**, and any important nuance in *italics*.\n\n"
+    "    5. Next, provide a **Detailed Explanation** that remains strictly grounded in the RAG documents. If helpful,\n"
+    "       include a *brief scenario* illustrating how these doc-based rules might apply.\n\n"
+    "    6. Conclude with an **'Other References'** section, where you may optionally add clarifications or knowledge\n"
+    "       beyond the doc but **label it** as external info. Any statutory references should appear in square brackets,\n"
+    "       e.g., [Section 1, Paragraph 2].\n\n"
+    "    7. If the user’s query **cannot** be answered with information from the RAG documents (meaning you have\n"
+    "       **zero** coverage for that country or topic), you must switch to **CASEB**, which requires:\n"
+    "       - A large \"Sorry!\" header: \"The uploaded document states nothing relevant...\"\n"
+    "       - A large \"Best guess\" header: attempt an interpretation, clearly flagged as conjecture.\n"
+    "       - A final large header in **red**, titled \"The fun part :-)\". Label it with *(section requested in\n"
+    "         Step 0 to show how output can be steered)* in normal text. Provide a sarcastic or lighthearted\n"
+    "         reflection (with emojis) about the query.\n\n"
+    "    8. In all doc-based sections, stick strictly to the RAG documents (no external knowledge), keep your\n"
+    "       professional or academically rigorous style, and preserve **bold** for pivotal references and *italics*\n"
+    "       for nuance.\n\n"
+    "    9. Always respond in the user’s initial query language, unless otherwise instructed.\n\n"
+    "    10. Present your final output in normal text (headings in large text as described), **never** in raw XML.\n"
+    "  </INSTRUCTIONS>\n\n"
+    "  <STRUCTURE>\n"
+    "    <REMARKS_TO_STRUCTURE>\n"
+    "      Please ensure the structural elements below appear in the user’s query language.\n"
+    "    </REMARKS_TO_STRUCTURE>\n\n"
+    "    <!-- Two possible final output scenarios -->\n\n"
+    "    <!-- Case A: Document-based answer (available info) -->\n"
+    "    <CASEA>\n"
+    "      <HEADER_LEVEL1>Instructions to Action</HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>TL;DR Summary</HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Detailed Explanation</HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Other References</HEADER_LEVEL1>\n"
+    "    </CASEA>\n\n"
+    "    <!-- Case B: No relevant doc coverage for the query -->\n"
+    "    <CASEB>\n"
+    "      <HEADER_LEVEL1>Sorry!</HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>Best guess</HEADER_LEVEL1>\n"
+    "      <HEADER_LEVEL1>The fun part :-)\n"
+    "        <SUBTITLE>(section requested in Step 0 to show how output can be steered)</SUBTITLE>\n"
+    "      </HEADER_LEVEL1>\n"
+    "    </CASEB>\n"
+    "  </STRUCTURE>\n\n"
+    "  <FINAL_REMARKS>\n"
+    "    - Do **not** guess if you lack data for a specific country. Instead, say \"No information in my documents.\"\n"
+    "      or use **CASEB** if no data is found at all.\n"
+    "    - Always apply step-by-step reasoning and keep the user’s question fully in mind.\n"
+    "    - Present the final response in normal prose, using headings as indicated.\n"
+    "    - If you are an ADVANCED VOICE MODE assistant, any <DELTA_FROM_MAIN_PROMPT> overrides contradictory\n"
+    "      instructions above.\n"
+    "  </FINAL_REMARKS>"
+)
 
 # Must be the first Streamlit command
 st.set_page_config(page_title="RAG User View", layout="wide")
@@ -225,18 +296,47 @@ class OpenAIEmbeddingFunction:
 # =======================
 class LLMCountryDetector:
     SYSTEM_PROMPT = """
-        ...
+        You are a specialized assistant for extracting ALL country references in ANY user text. 
+        You must detect and extract EVERY single country reference, including:
+
+        1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
+           - Extract all 2-letter codes like "CH", "US", "CN", "DE", etc.
+           - These MUST be extracted even when standalone
+           - Never skip any 2-letter country code
+           - Example: "DE vs CH" MUST return both codes
+
+        2. FULL NAMES:
+           - "Switzerland", "United States", "China", "Germany", etc.
+           - "Swiss", "American", "Chinese", "German" (adjective form)
+           
+        3. COMMON ABBREVIATIONS:
+           - "USA" => "US"
+           - "PRC" => "CN"
+           - "BRD" => "DE"
+           
+        4. CONTEXTUAL REFERENCES:
+           - "Swiss law" => "CH"
+           - "German regulations" => "DE"
+           - "Chinese market" => "CN"
+
+        Output format must be EXACT JSON:
+        [
+            {"detected_phrase": "exact text found", "code": "XX"}
+        ]
+
+        Output ONLY valid JSON. No extra text.
     """.strip()
 
-    def __init__(self, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
         if "api_key" not in st.session_state or not st.session_state["api_key"]:
             raise ValueError("No API key in session for LLMCountryDetector.")
-        self.client = OpenAI()
+        # Initialize using our updated OpenAI client
+        self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def detect_countries_in_text(self, text: str):
+    def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
         if DEBUG_MODE:
-            st.write(f"DEBUG => detect_countries_in_text called with text='{text[:100]}'...")  # DEBUG ADDED
+            st.write(f"DEBUG => detect_countries_in_text called with text='{text[:100]}'...")
         if not text.strip():
             return []
         try:
@@ -251,50 +351,96 @@ class LLMCountryDetector:
             )
             raw_content = response["choices"][0]["message"]["content"].strip()
             if DEBUG_MODE:
-                st.write(f"DEBUG => raw LLM country detection content: {raw_content[:200]}...")  # DEBUG ADDED
-
-            data = []
-            # Attempt JSON parse
+                st.write(f"DEBUG => LLM raw response: {raw_content}")
+            # Remove markdown formatting if present
+            cleaned_content = re.sub(r'^```json\s*|\s*```$', '', raw_content)
             try:
-                data = json.loads(raw_content)
-            except:
-                # fallback naive parse
-                data = []
-                matches = re.findall(
+                data = json.loads(cleaned_content)
+                if not isinstance(data, list):
+                    if DEBUG_MODE:
+                        st.write("DEBUG => JSON response was not a list")
+                    data = []
+                used_codes = set()
+                results = []
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    phrase = item.get("detected_phrase", "").strip()
+                    code = item.get("code", "")
+                    if len(code) == 2 and code.isupper() and phrase:
+                        if code not in used_codes:
+                            results.append({"detected_phrase": phrase, "code": code})
+                            used_codes.add(code)
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => Detected countries: {results}")
+                if not results:
+                    fallback_codes = self.naive_pycountry_detection(text)
+                    if fallback_codes and DEBUG_MODE:
+                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                    results = fallback_codes
+                return results
+            except json.JSONDecodeError as e:
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => JSON parse error: {str(e)}")
+                # Fallback: use regex extraction
+                matches = re.finditer(
                     r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
-                    raw_content
+                    cleaned_content
                 )
-                for m in matches:
-                    phrase, code = m
-                    data.append({"detected_phrase": phrase, "code": code})
-
-            results = []
-            used = set()
-            for d in data:
-                code = d.get("code", "").upper()
-                phrase = d.get("detected_phrase", "")
-                if len(code) == 2 and code.isalpha() and phrase:
-                    if code not in used:
-                        used.add(code)
+                results = []
+                used_codes = set()
+                for match in matches:
+                    phrase, code = match.groups()
+                    if code not in used_codes:
                         results.append({"detected_phrase": phrase, "code": code})
-            if DEBUG_MODE:
-                st.write(f"DEBUG => final countries detected: {results}")  # DEBUG ADDED
-            return results
-
+                        used_codes.add(code)
+                if not results:
+                    fallback_codes = self.naive_pycountry_detection(text)
+                    if fallback_codes and DEBUG_MODE:
+                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                    results = fallback_codes
+                return results
         except Exception as e:
             if DEBUG_MODE:
-                st.write(f"DEBUG => error in detect_countries_in_text: {str(e)}")
-            return []
+                st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
+            return self.naive_pycountry_detection(text)
 
-# =======================
-# 3) Global CASE Instructions
-# =======================
-BASE_DEFAULT_PROMPT = (
-    "  <ROLE>\n"
-    "    ... instructions ...\n"
-    "  </ROLE>"
-)
+    @staticmethod
+    def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
+        """
+        Fallback method: uses pycountry to detect 2-letter codes and country names.
+        """
+        found_codes = []
+        used_codes = set()
+        # First pass: detect 2-letter sequences
+        words = re.findall(r'\b[A-Za-z]{2}\b', text)
+        for w in words:
+            w_up = w.upper()
+            country = pycountry.countries.get(alpha_2=w_up)
+            if country and w_up not in used_codes:
+                found_codes.append({"detected_phrase": w, "code": w_up})
+                used_codes.add(w_up)
+        # Second pass: detect full country names
+        words = re.findall(r'\b[A-Za-z]+\b', text)
+        for w in words:
+            w_up = w.upper()
+            if w_up in used_codes:
+                continue
+            try:
+                for c in pycountry.countries:
+                    if w_up in c.name.upper():
+                        iso2 = c.alpha_2
+                        if iso2 not in used_codes:
+                            found_codes.append({"detected_phrase": w, "code": iso2})
+                            used_codes.add(iso2)
+                        break
+            except Exception:
+                pass
+        return found_codes
 
+    def detect_first_country_in_text(self, text: str):
+        all_codes = self.detect_countries_in_text(text)
+        return all_codes[0] if all_codes else None
 
 
 # =======================
@@ -426,42 +572,79 @@ def query_chroma_for_countries(query: str, collection_name="rag_collection", n_r
 # 6) generate_answer
 # =======================
 def query_and_get_answer():
+    # Ensure the API key is set.
     if not st.session_state.get("api_key"):
         st.error("Please set your OpenAI API key")
         return
+
+    # Retrieve the query from session state (bound via key "question").
     query = st.session_state.get("question", "")
     if not query:
         st.warning("Please enter a question")
         return
+
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
+
+    # --- AUTO-LAUNCH COUNTRY DETECTION ---
+    try:
+        detector = LLMCountryDetector(api_key=st.session_state["api_key"])
+        detected_countries = detector.detect_countries_in_text(query)
+    except Exception as e:
+        st.error(f"Error during country detection: {e}")
+        detected_countries = []
+
+    if detected_countries:
+        # Create a comma‑separated list of detected country codes.
+        country_list = ", ".join([d["code"] for d in detected_countries])
+    else:
+        country_list = "None"
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Countries detected: {country_list}")
+
+    # --- BUILD THE SYSTEM PROMPT ---
+    # Incorporate the BASE_DEFAULT_PROMPT and add a note about detected countries.
+    system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected Countries in Query: {country_list}"
+
+    # --- QUERY THE COLLECTION ---
     collection = get_collection("rag_collection")
     if not collection:
         st.error("Could not access collection")
         return
+
     try:
         results = collection.query(
             query_texts=[query],
             n_results=5,
             include=["documents", "metadatas"]
         )
+
         if DEBUG_MODE:
             st.write(f"DEBUG => Query results: {results}")
+
         if not results or not results.get("documents"):
             st.warning("No relevant documents found")
             return
+
         passages = results["documents"][0]
         metadata = results["metadatas"][0] if "metadatas" in results else []
+
+        # --- BUILD THE MESSAGES FOR THE LLM ---
         messages = []
         messages.append({
             "role": "system",
-            "content": "You are a helpful assistant. Answer the question using only the provided context. If you cannot answer from the context, say so."
+            "content": system_message
         })
+
+        # Concatenate all retrieved passages to form the context.
         context = "\n\n".join(passages)
         messages.append({
             "role": "user",
             "content": f"Context:\n{context}\n\nQuestion: {query}"
         })
+
+        # --- CALL THE OPENAI CHAT API ---
         client = OpenAI(api_key=st.session_state["api_key"])
         completion = client.chat_completions_create(
             model="gpt-4",
@@ -469,22 +652,22 @@ def query_and_get_answer():
             temperature=0.0
         )
         answer = completion["choices"][0]["message"]["content"]
+
+        # --- DISPLAY THE ANSWER ---
         st.markdown("### Answer")
         st.write(answer)
+
         if DEBUG_MODE:
             st.markdown("### Debug: Retrieved Passages")
             for i, (passage, meta) in enumerate(zip(passages, metadata)):
                 st.markdown(f"**Passage {i+1}:**")
                 st.write(passage)
                 st.write(f"Metadata: {meta}")
+
     except Exception as e:
         st.error(f"Error generating answer: {str(e)}")
         if DEBUG_MODE:
             st.write(f"DEBUG => Full error: {type(e).__name__}: {str(e)}")
-
-# In your UI code:
-if st.button("Get Answer"):
-    query_and_get_answer()
 
 def generate_answer(query: str, passages, metadata):
     messages = []
@@ -603,21 +786,80 @@ def main():
     st.title("Simple RAG UI (No Login)")
     st.write("Enter your API key, pick a folder with your Chroma DB, then ask a question.")
 
+    # --- Input the user's question (bound to session state key "question") ---
     st.text_input("Your question:", key="question")
-    if st.button("Get Answer", key="get_answer_button"):
-        query_and_get_answer()
-        if not st.session_state.get("api_key"):
-            st.error("Please set your OpenAI API key in the sidebar first")
+
+    # --- Primary "Get Answer" Button ---
+    if st.button("Get Answer"):
+        query_text = st.session_state.get("question", "")
+        if query_text.strip():
+            try:
+                # --- Step 1: Auto-Launch Country Detection ---
+                detector = LLMCountryDetector(api_key=st.session_state["api_key"])
+                detected_countries = detector.detect_countries_in_text(query_text)
+                if detected_countries:
+                    # Create a comma-separated list of detected country codes
+                    country_list = ", ".join([d["code"] for d in detected_countries])
+                else:
+                    country_list = "None"
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => Countries detected: {country_list}")
+
+                # --- Step 2: Build the System Prompt ---
+                system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected Countries in Query: {country_list}"
+
+                # --- Step 3: Query the Collection ---
+                collection = get_collection("rag_collection")
+                if not collection:
+                    st.error("Could not access collection")
+                else:
+                    results = collection.query(
+                        query_texts=[query_text],
+                        n_results=5,
+                        include=["documents", "metadatas"]
+                    )
+                    if not results or not results.get("documents"):
+                        st.warning("No relevant documents found")
+                    else:
+                        passages = results["documents"][0]
+                        metadata = results["metadatas"][0] if "metadatas" in results else []
+
+                        # --- Step 4: Build the Messages for the LLM ---
+                        messages = []
+                        messages.append({
+                            "role": "system",
+                            "content": system_message
+                        })
+                        context = "\n\n".join(passages)
+                        messages.append({
+                            "role": "user",
+                            "content": f"Context:\n{context}\n\nQuestion: {query_text}"
+                        })
+
+                        # --- Step 5: Call the OpenAI Chat API ---
+                        client = OpenAI(api_key=st.session_state["api_key"])
+                        completion = client.chat_completions_create(
+                            model="gpt-4",
+                            messages=messages,
+                            temperature=0.0
+                        )
+                        answer = completion["choices"][0]["message"]["content"]
+
+                        # --- Step 6: Display the Answer ---
+                        st.markdown("### Answer")
+                        st.write(answer)
+                        
+                        if DEBUG_MODE:
+                            st.markdown("### Debug: Retrieved Passages")
+                            for i, (passage, meta) in enumerate(zip(passages, metadata)):
+                                st.markdown(f"**Passage {i+1}:**")
+                                st.write(passage)
+                                st.write(f"Metadata: {meta}")
+
+            except Exception as e:
+                st.error(f"Error generating answer: {e}")
         else:
-            query = st.session_state.get("question", "")
-            if query:
-                results = query_collection(query, "rag_collection")
-                if results:
-                    # Process and display results
-                    passages = results["documents"][0]
-                    st.write("Found relevant passages:")
-                    for passage in passages:
-                        st.write(passage)
+            st.warning("Please enter a question above.")
 
 if __name__ == "__main__":
     main()
