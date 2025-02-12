@@ -211,18 +211,28 @@ def init_chroma_client():
         return None, None
 
     dirs = get_user_specific_directory(st.session_state["user_id"])
-    embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
-
-    # Use the new PersistentClient for local disk storage, rather than Client(Settings(...))
-    client = chromadb.PersistentClient(
-        path=dirs["chroma"],  # the local directory for storing DB data
-        settings=Settings(
-            anonymized_telemetry=False
-            # optionally allow_reset=True if you want .reset() calls
+    
+    try:
+        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
+        
+        # Test the embedding function
+        test_result = embedding_function(["test"])
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
+        
+        client = chromadb.PersistentClient(
+            path=dirs["chroma"],
+            settings=Settings(
+                anonymized_telemetry=False
+            )
         )
-    )
-
-    return client, embedding_function
+        
+        return client, embedding_function
+        
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error initializing ChromaDB client: {str(e)}")
+        return None, None
     
 
 # Create embedding function that uses OpenAI
@@ -233,15 +243,70 @@ class OpenAIEmbeddingFunction:
         self.api_key = api_key.strip()
         self.client = OpenAI(api_key=self.api_key)
     
-    def __call__(self, texts):
-        if not isinstance(texts, list):
-            texts = [texts]
-        texts = [sanitize_text(t) for t in texts]
-        response = self.client.embeddings.create(input=texts, model="text-embedding-3-large")
-        return [item.embedding for item in response.data]
-    
+    def __call__(self, input):
+        """Generate embeddings for the input texts.
+        
+        Args:
+            input: A string or list of strings to embed
+            
+        Returns:
+            List of embeddings, each embedding is a list of floats
+        """
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Input type: {type(input)}")
+            st.write(f"DEBUG => Input preview: {str(input)[:100]}")
+        
+        # Handle various input types
+        if isinstance(input, str):
+            texts = [input]
+        elif isinstance(input, list):
+            texts = input
+        else:
+            raise ValueError(f"Unsupported input type: {type(input)}")
+        
+        # Sanitize and prepare texts
+        sanitized_texts = []
+        for text in texts:
+            if isinstance(text, (dict, list)):
+                # Convert complex objects to string
+                text = str(text)
+            elif not isinstance(text, str):
+                text = str(text)
+            sanitized_texts.append(sanitize_text(text))
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Generating embeddings for {len(sanitized_texts)} texts")
+            st.write(f"DEBUG => First text preview: {sanitized_texts[0][:100] if sanitized_texts else 'None'}")
+        
+        try:
+            # Ensure we have valid input
+            if not sanitized_texts or not any(text.strip() for text in sanitized_texts):
+                raise ValueError("No valid text to embed")
+            
+            # Create embeddings
+            response = self.client.embeddings.create(
+                input=sanitized_texts,
+                model="text-embedding-3-large"
+            )
+            
+            embeddings = [item.embedding for item in response.data]
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Generated {len(embeddings)} embeddings")
+                if embeddings:
+                    st.write(f"DEBUG => Embedding dimension: {len(embeddings[0])}")
+            
+            return embeddings
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Error generating embeddings: {str(e)}")
+                st.write(f"DEBUG => Error type: {type(e)}")
+                if hasattr(e, 'response'):
+                    st.write(f"DEBUG => Response: {e.response.text if hasattr(e.response, 'text') else 'No response text'}")
+            raise
+
     def __hash__(self):
-        # Deterministic hash using MD5
         return int(hashlib.md5(self.api_key.encode('utf-8')).hexdigest(), 16)
     
     def __eq__(self, other):
@@ -1075,19 +1140,56 @@ def detect_country_in_text_fallback(text: str) -> str:
     # ... more guesses if needed ...
     return "UNKNOWN"
 
-
+def get_collection_dimension(collection_name: str) -> Optional[int]:
+    """Get the dimension of existing embeddings in a collection."""
+    try:
+        coll = create_or_load_collection(collection_name)
+        # Important: Query for a single document instead of trying to get all embeddings
+        results = coll.query(
+            query_texts=[""],  # Empty query to get any document
+            n_results=1,
+            include=["embeddings"]
+        )
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Query results: {results}")
+            
+        if results and results.get('embeddings') and len(results['embeddings']) > 0:
+            dim = len(results['embeddings'][0][0])  # Note the double indexing
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Found dimension: {dim}")
+            return dim
+            
+        # Fallback: try getting all documents
+        all_docs = coll.get(include=["embeddings"])
+        if all_docs and all_docs.get('embeddings') and len(all_docs['embeddings']) > 0:
+            dim = len(all_docs['embeddings'][0])
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Found dimension (fallback): {dim}")
+            return dim
+            
+        if DEBUG_MODE:
+            st.write("DEBUG => No embeddings found in collection")
+        return None
+        
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error checking collection dimension: {str(e)}")
+            st.write(f"DEBUG => Collection exists: {collection_name in [c.name for c in chroma_client.list_collections()]}")
+        return None
+    
 def embed_text(
     texts: List[Union[str, Dict[str, Any]]],
-    openai_embedding_model: str = "text-embedding-3-large",
+    collection_name: str = "rag_collection",
     update_stage_flag=True,
     return_data=False
 ):
-    """Modified embedding function that handles image chunks properly."""
+    """Modified embedding function that ensures dimensional consistency."""
     if not st.session_state.get("api_key"):
         st.error("OpenAI API key not set.")
         st.stop()
-    
-    # Process each text/chunk to extract embedable content
+        
+    # Process texts to extract embedable content
     processed_texts = []
     original_chunks = []
     
@@ -1099,59 +1201,59 @@ def embed_text(
             text = chunk
             original_chunks.append({"text": text})
             
-        # If it's an image chunk, only embed the path and metadata, not the base64 data
         if "<image_data" in text:
-            # Extract just the image path and format part
             path_match = re.match(r"Image: ([^\n]+)", text)
-            if path_match:
-                embedable_text = path_match.group(0)  # Just use "Image: path (WxH format)"
-            else:
-                embedable_text = "Image chunk"  # Fallback
+            embedable_text = path_match.group(0) if path_match else "Image chunk"
         else:
             embedable_text = text
             
-        processed_texts.append(sanitize_text(embedable_text))
+        processed_texts.append(embedable_text)
     
-    # Generate embeddings for the processed texts
-    response = new_client.embeddings.create(
-        input=processed_texts,
-        model=openai_embedding_model
-    )
-    embeddings = [item.embedding for item in response.data]
+    # Create embedding function instance
+    embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
     
-    # Create token breakdowns for the first 2 chunks only
-    token_breakdowns = []
-    for text, embedding in zip(processed_texts[:2], embeddings[:2]):
-        tokens = text.split()[:5]  # First 5 words only
-        breakdown = []
-        if tokens:
-            segment_size = len(embedding) // len(tokens)
-            for i, tok in enumerate(tokens):
-                start = i * segment_size
-                end = start + segment_size
-                snippet = embedding[start:min(end, len(embedding))][:3]
-                snippet = [round(x, 4) for x in snippet]
-                breakdown.append({"token": tok, "vector_snippet": snippet})
-        token_breakdowns.append(breakdown)
-    
-    embedding_data = {
-        "embeddings": embeddings,
-        "dimensions": len(embeddings[0]) if embeddings else 0,
-        "preview": [round(x, 4) for x in embeddings[0][:5]] if embeddings else [],
-        "total_vectors": len(embeddings),
-        "token_breakdowns": token_breakdowns,
-        "preview_note": "(Showing first 2 chunks, 5 words each, 3 dimensions per word)"
-    }
-    
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Embedding data generated for {len(processed_texts)} chunks")
-        st.write(f"DEBUG => First processed text: {processed_texts[0][:200]}")
-    
-    if update_stage_flag:
-        update_stage('embed', embedding_data)
-    if return_data:
-        return embedding_data
-    return embeddings
+    try:
+        # Generate embeddings
+        embeddings = embedding_function(processed_texts)  # Note: using processed_texts directly
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Generated {len(embeddings)} embeddings")
+            st.write(f"DEBUG => Embedding dimension: {len(embeddings[0])}")
+        
+        # Create token breakdowns for preview
+        token_breakdowns = []
+        for text, embedding in zip(processed_texts[:2], embeddings[:2]):
+            tokens = text.split()[:5]
+            breakdown = []
+            if tokens:
+                segment_size = len(embedding) // len(tokens)
+                for i, tok in enumerate(tokens):
+                    start = i * segment_size
+                    end = start + segment_size
+                    snippet = embedding[start:min(end, len(embedding))][:3]
+                    snippet = [round(x, 4) for x in snippet]
+                    breakdown.append({"token": tok, "vector_snippet": snippet})
+            token_breakdowns.append(breakdown)
+        
+        embedding_data = {
+            "embeddings": embeddings,
+            "dimensions": len(embeddings[0]) if embeddings else 0,
+            "preview": [round(x, 4) for x in embeddings[0][:5]] if embeddings else [],
+            "total_vectors": len(embeddings),
+            "token_breakdowns": token_breakdowns,
+            "preview_note": "(Showing first 2 chunks, 5 words each, 3 dimensions per word)"
+        }
+        
+        if update_stage_flag:
+            update_stage('embed', embedding_data)
+        if return_data:
+            return embedding_data
+        return embeddings
+        
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error in embed_text: {str(e)}")
+        raise
 
 def wrap_text_with_xml(text: str, iso_code: str, filename: str) -> str:
     """Wraps text with XML tags including metadata."""
@@ -1773,7 +1875,9 @@ ${ data.answer || "No answer available." }
 # 6) CREATE/LOAD COLLECTION, ETC.
 ##############################################################################
 def create_or_load_collection(collection_name: str, force_recreate: bool = False):
+    """Create or load a collection with proper embedding function."""
     global chroma_client, embedding_function_instance
+    
     if embedding_function_instance is None:
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
         st.stop()
@@ -1784,48 +1888,65 @@ def create_or_load_collection(collection_name: str, force_recreate: bool = False
     if force_recreate:
         try:
             chroma_client.delete_collection(name=collection_name)
-            st.write(f"DEBUG: Deleted existing collection '{collection_name}' due to force_recreate flag.")
+            if DEBUG_MODE:
+                st.write(f"DEBUG: Deleted existing collection '{collection_name}' due to force_recreate flag.")
         except Exception as e:
-            st.write(f"DEBUG: Could not delete existing collection '{collection_name}': {e}")
+            if DEBUG_MODE:
+                st.write(f"DEBUG: Could not delete existing collection '{collection_name}': {e}")
     
-    # List current files in the persist directory (for additional confirmation)
-    import glob
-    persist_files = glob.glob(os.path.join(get_user_specific_directory(st.session_state.user_id)["chroma"], "*"))
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Files in persist directory before loading collection: {persist_files}")
-    
+    # List current collections
     current_collections = [c.name for c in chroma_client.list_collections()]
+    
     if DEBUG_MODE:
-        st.write(f"DEBUG: Current collections in persist directory: {current_collections}")
-    
-    if collection_name in current_collections:
-        coll = chroma_client.get_or_create_collection(name=collection_name)
+        st.write(f"DEBUG: Current collections: {current_collections}")
+        
+    try:
+        if collection_name in current_collections:
+            # Important: Explicitly set the embedding function when getting existing collection
+            coll = chroma_client.get_collection(
+                name=collection_name,
+                embedding_function=embedding_function_instance
+            )
+            if DEBUG_MODE:
+                st.write(f"DEBUG: Retrieved existing collection '{collection_name}' with embedding function")
+        else:
+            # Create new collection with embedding function
+            coll = chroma_client.create_collection(
+                name=collection_name,
+                embedding_function=embedding_function_instance
+            )
+            if DEBUG_MODE:
+                st.write(f"DEBUG: Created new collection '{collection_name}' with embedding function")
+        
+        # Verify the collection exists and has the embedding function
         if DEBUG_MODE:
-            st.write(f"DEBUG: Found existing collection '{collection_name}'")
-    else:
-        coll = chroma_client.create_collection(name=collection_name)
+            st.write(f"DEBUG: Collection '{collection_name}' exists: {coll is not None}")
+            st.write(f"DEBUG: Collection embedding function hash: {hash(coll._embedding_function) if hasattr(coll, '_embedding_function') else 'None'}")
+        
+        return coll
+        
+    except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG: Created new collection '{collection_name}'")
-    
-    return coll
+            st.write(f"DEBUG: Error in create_or_load_collection: {str(e)}")
+        raise
 
 
 
 def add_to_chroma_collection(
     collection_name: str,
     chunks: List[Union[str, Dict[str, Any]]],
-    xml_paths: List[str],
-    metadatas: Optional[List[dict]] = None
+    metadatas: Optional[List[dict]] = None,
+    xml_paths: Optional[List[str]] = None  # Make xml_paths optional
 ):
     """Enhanced storage function with proper embedding handling."""
     if DEBUG_MODE:
         st.write("DEBUG => Starting Chroma storage process")
     
-    # Process chunks to create proper documents and metadata
+    # Process chunks and generate embeddings
     texts = []
     chunk_metadatas = []
     
-    for chunk, xml_path in zip(chunks, xml_paths):
+    for i, chunk in enumerate(chunks):
         if isinstance(chunk, dict):
             text = chunk["text"]
             chunk_meta = chunk.get("metadata", {})
@@ -1845,7 +1966,8 @@ def add_to_chroma_collection(
         # Combine metadata
         combined_meta = {
             **chunk_meta,
-            "xml_path": xml_path,
+            **(metadatas[i] if metadatas and i < len(metadatas) else {}),
+            "xml_path": xml_paths[i] if xml_paths and i < len(xml_paths) else None,
             "content_type": detect_content_type(text)
         }
         
@@ -1878,7 +2000,7 @@ def add_to_chroma_collection(
     
     coll.add(
         documents=texts,
-        embeddings=embeddings,  # Explicitly pass embeddings
+        embeddings=embeddings,
         metadatas=chunk_metadatas,
         ids=ids
     )
@@ -1916,11 +2038,24 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
 
-    # 1) Detect countries
+    # 1) Create or load Chroma collection
+    force_flag = st.session_state.get("force_recreate", False)
+    coll = create_or_load_collection(collection_name, force_recreate=force_flag)
+    
+    try:
+        # Test collection has data
+        test_results = coll.peek()
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Collection peek results: {test_results}")
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error peeking collection: {str(e)}")
+    
+    # 2) Detect countries
     llm_detector = LLMCountryDetector(api_key=st.session_state["api_key"])
     detected_list = llm_detector.detect_countries_in_text(query)
 
-    # 2) Logging & user display
+    # 3) Logging & user display
     if detected_list:
         country_list = [f"'{item['detected_phrase']}' → {item['code']}" for item in detected_list]
         st.write("🌍 **Countries Detected in Query:**")
@@ -1929,12 +2064,18 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
     else:
         st.write("❌ No country codes detected in query")
 
-    # 3) Create or load Chroma collection
-    force_flag = st.session_state.get("force_recreate", False)
-    coll = create_or_load_collection(collection_name, force_recreate=force_flag)
-    
     # Get all documents to check available countries
-    all_docs = coll.get()
+    try:
+        all_docs = coll.get()
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Retrieved {len(all_docs.get('ids', []))} documents")
+            if 'metadatas' in all_docs:
+                st.write(f"DEBUG => Sample metadata: {all_docs['metadatas'][0] if all_docs['metadatas'] else 'None'}")
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error getting documents: {str(e)}")
+        all_docs = {'ids': [], 'metadatas': []}
+
     available_countries = set()
     for metadata in all_docs.get("metadatas", []):
         if metadata and "country_code" in metadata:
@@ -1959,37 +2100,57 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
         for code in iso_codes:
             if DEBUG_MODE:
                 st.write(f"DEBUG => Querying for country {code}")
-                if code in available_countries:
-                    st.write(f"DEBUG => Country {code} is available in database")
-                else:
-                    st.write(f"DEBUG => Country {code} not found in database")
+
+            # Generate query embedding using same model as collection
+            query_embedding_data = embed_text(
+                [query], 
+                collection_name=collection_name,  # Pass collection name to ensure model consistency
+                update_stage_flag=False,
+                return_data=True
+            )
+            query_embedding = query_embedding_data["embeddings"][0]
 
             # Try different query approaches
-            for attempt in range(3):  # Try up to 3 different query strategies
+            for attempt in range(3):
                 if attempt == 0:
-                    # First attempt: Exact match on country_code
-                    results = coll.query(
-                        query_texts=[query],
-                        where={"country_code": code},
-                        n_results=n_results
-                    )
+                    try:
+                        results = coll.query(
+                            query_embeddings=[query_embedding],  # Use pre-generated embedding
+                            where={"country_code": code},
+                            n_results=n_results
+                        )
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => Query attempt {attempt} failed: {str(e)}")
+                        continue
+
                 elif attempt == 1:
-                    # Second attempt: Broader semantic search for the country
                     country_query = f"information about {code} regulations"
-                    results = coll.query(
-                        query_texts=[country_query],
-                        where={"country_code": code},
-                        n_results=n_results
+                    query_embedding_data = embed_text(
+                        [country_query],
+                        collection_name=collection_name,
+                        update_stage_flag=False,
+                        return_data=True
                     )
+                    try:
+                        results = coll.query(
+                            query_embeddings=[query_embedding_data["embeddings"][0]],
+                            where={"country_code": code},
+                            n_results=n_results
+                        )
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => Query attempt {attempt} failed: {str(e)}")
+                        continue
+
                 else:
-                    # Final attempt: Just get all documents for this country
                     try:
                         results = coll.get(
                             where={"country_code": code}
                         )
                     except Exception as e:
                         if DEBUG_MODE:
-                            st.write(f"DEBUG => Error in final attempt for {code}: {str(e)}")
+                            st.write(f"DEBUG => Query attempt {attempt} failed: {str(e)}")
                         continue
 
                 curr_passages = results.get("documents", [[]])[0] if attempt < 2 else results.get("documents", [])
@@ -2005,7 +2166,7 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
             # Process results
             if curr_passages:
                 for p, m in zip(curr_passages, curr_metadata):
-                    passage_key = f"{code}:{p}"  # Include country in key to allow same passage for different countries
+                    passage_key = f"{code}:{p}"
                     if passage_key not in seen_passages:
                         combined_passages.append(p)
                         combined_metadata.append(m)
@@ -2017,35 +2178,28 @@ def query_collection(query: str, collection_name: str, n_results: int = 10):
         # Standard search if no countries detected
         if DEBUG_MODE:
             st.write("DEBUG => Doing standard search with no country filter")
+        
+        # Generate query embedding
+        query_embedding_data = embed_text(
+            [query],
+            collection_name=collection_name,
+            update_stage_flag=False,
+            return_data=True
+        )
+        query_embedding = query_embedding_data["embeddings"][0]
+        
         results = coll.query(
-            query_texts=[query],
+            query_embeddings=[query_embedding],
             n_results=n_results
         )
         combined_passages = results.get("documents", [[]])[0]
         combined_metadata = results.get("metadatas", [[]])[0]
 
-    # 6) Final verification
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Final combined passages: {len(combined_passages)}")
-        st.write(f"DEBUG => Final combined metadata: {len(combined_metadata)}")
-        retrieved_countries = set(m.get('country_code', '') for m in combined_metadata)
-        st.write(f"DEBUG => Retrieved data for countries: {retrieved_countries}")
-        missing = set(iso_codes) - retrieved_countries
-        if missing:
-            st.write(f"DEBUG => Missing data for requested countries: {missing}")
-
-    # 7) Update pipeline stage
+    # Update pipeline stage
     update_stage('retrieve', {
         "passages": combined_passages,
         "metadata": combined_metadata
     })
-
-    # Print found countries
-    if combined_metadata:
-        countries_found = set(meta.get('country_code', 'Unknown') 
-                            for meta in combined_metadata 
-                            if meta.get('country_code'))
-        st.write(f"..of which we have data in our database for: {', '.join(countries_found)}")
 
     return combined_passages, combined_metadata
 
@@ -3420,11 +3574,16 @@ def main():
         
         # --- Step 4: Store ---
         st.subheader("Step 4: Store Embedded Context")
+        # In main(), replace:
         if st.button("Run Step 4: Store Embedded Context"):
             if st.session_state.chunks and st.session_state.embeddings:
-                ids = [str(uuid.uuid4()) for _ in st.session_state.chunks]
+                # Create default metadata for each chunk
                 metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
-                add_to_chroma_collection("rag_collection", st.session_state.chunks, metadatas, ids)
+                add_to_chroma_collection(
+                    collection_name="rag_collection",
+                    chunks=st.session_state.chunks,
+                    metadatas=metadatas  # Pass only metadatas
+                )
                 st.success("Data stored in data collection 'rag_collection'!")
             else:
                 st.warning("Ensure document is uploaded, chunked, and embedded.")
