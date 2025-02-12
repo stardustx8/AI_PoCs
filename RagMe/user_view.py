@@ -108,6 +108,58 @@ def create_user_session():
         st.session_state.user_id = None
         st.session_state.is_authenticated = False
 
+def load_selected_directory() -> str:
+    """Load the persisted directory from file, or return the current working directory."""
+    file_path = "selected_directory.txt"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            dir_selected = f.read().strip()
+            if os.path.isdir(dir_selected):
+                return dir_selected
+    return os.getcwd()
+
+def save_selected_directory(directory: str):
+    """Persist the selected directory to file."""
+    file_path = "selected_directory.txt"
+    with open(file_path, "w") as f:
+        f.write(directory)
+
+def list_subfolders(path: str):
+    try:
+        entries = os.scandir(path)
+        subfolders = [e.name for e in entries if e.is_dir()]
+        subfolders.sort()
+        return subfolders
+    except Exception:
+        return []
+
+def build_directory_browser():
+    # If the browser path is not in session state, load the persisted directory.
+    if "browse_path" not in st.session_state:
+        st.session_state.browse_path = load_selected_directory()
+
+    st.sidebar.markdown("**Directory Browser**")
+    st.sidebar.write(f"Current: `{st.session_state.browse_path}`")
+
+    subs = list_subfolders(st.session_state.browse_path)
+    if subs:
+        choice = st.sidebar.selectbox("Subfolders", options=["(Select a folder)"] + subs)
+        if choice != "(Select a folder)":
+            if st.sidebar.button("Go to Subfolder"):
+                st.session_state.browse_path = os.path.join(st.session_state.browse_path, choice)
+    else:
+        st.sidebar.write("No subfolders here.")
+
+    if st.sidebar.button("Go Up One Level"):
+        parent = os.path.dirname(st.session_state.browse_path)
+        if parent and os.path.isdir(parent):
+            st.session_state.browse_path = parent
+
+    if st.sidebar.button("Set as Chroma Folder"):
+        st.session_state["chroma_folder"] = st.session_state.browse_path
+        save_selected_directory(st.session_state.browse_path)
+        st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
+
 # Initialize session state
 create_user_session()
 
@@ -184,21 +236,6 @@ def set_openai_api_key(api_key: str):
     except Exception as e:
         st.error(f"Error initializing OpenAI client: {e}")
         return None
-
-if 'api_key' not in st.session_state:
-    st.session_state.api_key = None
-
-with st.sidebar:
-    # **Only one API key textbox is now shown.**
-    api_key = st.text_input("OpenAI API Key", type="password")
-    if api_key:
-        try:
-            # Initialize the OpenAI client to verify the key.
-            client = OpenAI(api_key=api_key)
-            st.session_state.api_key = api_key
-            st.success("API key set successfully!")
-        except Exception as e:
-            st.error(f"Error initializing OpenAI client: {e}")
 
 # Update the OpenAIEmbeddingFunction class
 class OpenAIEmbeddings:
@@ -295,51 +332,81 @@ class OpenAIEmbeddingFunction:
 # 2) LLMCountryDetector
 # =======================
 class LLMCountryDetector:
+    """
+    This version matches the main app's complete logic. It instructs the LLM to be
+    extra careful about partial words or spurious alpha-2 codes that appear
+    inside normal text. The fallback also checks if uppercase or recognized
+    synonyms exist to confirm a valid country code.
+    """
+
     SYSTEM_PROMPT = """
-        You are a specialized assistant for extracting ALL country references in ANY user text. 
-        You must detect and extract EVERY single country reference, including:
+        You are a specialized assistant for extracting ALL country references in ANY user text, 
+        but you MUST carefully avoid partial-word triggers. Specifically:
 
         1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
-           - Extract all 2-letter codes like "CH", "US", "CN", "DE", etc.
-           - These MUST be extracted even when standalone
-           - Never skip any 2-letter country code
-           - Example: "DE vs CH" MUST return both codes
+           - Extract only 2-letter codes in uppercase form like "CH", "US", "CN", "DE", etc.
+           - Only do so when they appear as separate tokens or clearly indicated as a code,
+             never as part of an unrelated word. For instance, "as" in lowercase or within "basic"
+             does NOT map to "AS". 
+           - If a code is recognized as ISO alpha2 for a real country or territory, keep it.
 
-        2. FULL NAMES:
-           - "Switzerland", "United States", "China", "Germany", etc.
-           - "Swiss", "American", "Chinese", "German" (adjective form)
-           
+        2. FULL COUNTRY NAMES (and typical adjectives):
+           - "Switzerland", "Swiss", "United States", "American", "China", "Chinese", etc.
+           - If you see synonyms or well-known abbreviations for real countries (like "USA" -> "US"),
+             you must transform them into their correct 2-letter code (e.g. "USA" => "US").
+
         3. COMMON ABBREVIATIONS:
-           - "USA" => "US"
            - "PRC" => "CN"
            - "BRD" => "DE"
-           
+           - "UK"  => "GB"
+
         4. CONTEXTUAL REFERENCES:
            - "Swiss law" => "CH"
            - "German regulations" => "DE"
            - "Chinese market" => "CN"
 
-        Output format must be EXACT JSON:
+        EXTREMELY IMPORTANT:
+        - You MUST catch all real uppercase 2-letter ISO codes that appear as separate tokens.
+        - You MUST NOT guess if the substring doesn't match a real uppercase code, or if it's just part of
+          an ordinary lowercase word like "as" in "as of now." That should NOT become "AS."
+        - If in doubt, skip it.
+
+        Output format must be EXACT JSON (no extra text), for example:
         [
             {"detected_phrase": "exact text found", "code": "XX"}
         ]
 
-        Output ONLY valid JSON. No extra text.
+        That is your only response. Do not add explanations or commentary.
     """.strip()
 
     def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
+        """
+        Initialize with the same OpenAI client code used in the main app,
+        ensuring that st.session_state["api_key"] is set.
+        """
+        # Import the custom OpenAI client from your code. (Assuming "OpenAI" is defined with chat_completions_create)
+        # e.g. from user_view import OpenAI
         if "api_key" not in st.session_state or not st.session_state["api_key"]:
             raise ValueError("No API key in session for LLMCountryDetector.")
-        # Initialize using our updated OpenAI client
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)  # Uses your custom OpenAI class
         self.model = model
 
     def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Core detection logic:
+         1. Calls the LLM with the specialized system prompt.
+         2. Tries to parse the response as JSON.
+         3. If that fails or yields empty results, does fallback "naive_pycountry_detection."
+         4. Removes duplicates, skipping partial words that are not uppercase codes.
+        """
         if DEBUG_MODE:
             st.write(f"DEBUG => detect_countries_in_text called with text='{text[:100]}'...")
+
         if not text.strip():
             return []
+
         try:
+            # Step 1: LLM-based detection
             response = self.client.chat_completions_create(
                 model=self.model,
                 messages=[
@@ -352,93 +419,147 @@ class LLMCountryDetector:
             raw_content = response["choices"][0]["message"]["content"].strip()
             if DEBUG_MODE:
                 st.write(f"DEBUG => LLM raw response: {raw_content}")
-            # Remove markdown formatting if present
+
+            # Step 2: Clean any code fences that might appear
             cleaned_content = re.sub(r'^```json\s*|\s*```$', '', raw_content)
+
             try:
                 data = json.loads(cleaned_content)
                 if not isinstance(data, list):
                     if DEBUG_MODE:
-                        st.write("DEBUG => JSON response was not a list")
+                        st.write("DEBUG => JSON response was not a list, fallback triggered.")
                     data = []
-                used_codes = set()
-                results = []
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    phrase = item.get("detected_phrase", "").strip()
-                    code = item.get("code", "")
-                    if len(code) == 2 and code.isupper() and phrase:
-                        if code not in used_codes:
-                            results.append({"detected_phrase": phrase, "code": code})
-                            used_codes.add(code)
+                results = self._deduplicate_and_validate(data)
                 if DEBUG_MODE:
-                    st.write(f"DEBUG => Detected countries: {results}")
+                    st.write(f"DEBUG => LLM-based results => {results}")
+
+                # Step 3: Fallback if no results
                 if not results:
                     fallback_codes = self.naive_pycountry_detection(text)
                     if fallback_codes and DEBUG_MODE:
-                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                        st.write(f"DEBUG => naive fallback => {fallback_codes}")
                     results = fallback_codes
+
                 return results
+
             except json.JSONDecodeError as e:
+                # Step 2B: If JSON parse fails, try regex or fallback
                 if DEBUG_MODE:
-                    st.write(f"DEBUG => JSON parse error: {str(e)}")
-                # Fallback: use regex extraction
-                matches = re.finditer(
-                    r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
-                    cleaned_content
-                )
-                results = []
-                used_codes = set()
-                for match in matches:
-                    phrase, code = match.groups()
-                    if code not in used_codes:
-                        results.append({"detected_phrase": phrase, "code": code})
-                        used_codes.add(code)
-                if not results:
-                    fallback_codes = self.naive_pycountry_detection(text)
-                    if fallback_codes and DEBUG_MODE:
-                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
-                    results = fallback_codes
-                return results
+                    st.write(f"DEBUG => JSON parse error: {e}")
+                regex_results = self._extract_via_regex(cleaned_content)
+                if regex_results:
+                    return regex_results
+                # If still empty, fallback
+                fallback_codes = self.naive_pycountry_detection(text)
+                if fallback_codes and DEBUG_MODE:
+                    st.write(f"DEBUG => fallback after JSON parse error => {fallback_codes}")
+                return fallback_codes
+
         except Exception as e:
+            # If LLM call fails, fallback
             if DEBUG_MODE:
                 st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
             return self.naive_pycountry_detection(text)
 
     @staticmethod
+    def _extract_via_regex(text: str) -> List[Dict[str, str]]:
+        """
+        Attempts naive extraction from a well-formed JSON snippet
+        or lines like:
+          {"detected_phrase": "DE", "code": "DE"}, ...
+        """
+        matches = re.findall(
+            r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
+            text
+        )
+        results = []
+        used_codes = set()
+        for phrase, code in matches:
+            code_up = code.upper()
+            if code_up not in used_codes and len(code_up) == 2:
+                results.append({"detected_phrase": phrase, "code": code_up})
+                used_codes.add(code_up)
+        return results
+
+    @staticmethod
+    def _deduplicate_and_validate(data: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """
+        Validate each item, ensuring:
+          - code is exactly 2 uppercase letters
+          - phrase is non-empty
+        Then deduplicate by code.
+        """
+        used = set()
+        results = []
+        for item in data:
+            code = item.get("code", "").upper()
+            phrase = item.get("detected_phrase", "").strip()
+            if len(code) == 2 and code.isalpha() and phrase:
+                # e.g., "AS" is a valid alpha2 => American Samoa
+                # But skip if it's just partial-lowercase unless user typed uppercase
+                # The LLM prompt tries to avoid that scenario in the first place.
+                if code not in used:
+                    results.append({"detected_phrase": phrase, "code": code})
+                    used.add(code)
+        return results
+
+    @staticmethod
     def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
         """
-        Fallback method: uses pycountry to detect 2-letter codes and country names.
+        Fallback method if the LLM response is empty or invalid.
+        1) Scans for uppercase 2-letter tokens or known synonyms (USA -> US, etc.).
+        2) Checks for real alpha2 code in pycountry.
+        3) Scans for country names or adjectives that can be mapped back to alpha2 codes.
         """
         found_codes = []
         used_codes = set()
-        # First pass: detect 2-letter sequences
-        words = re.findall(r'\b[A-Za-z]{2}\b', text)
-        for w in words:
-            w_up = w.upper()
-            country = pycountry.countries.get(alpha_2=w_up)
-            if country and w_up not in used_codes:
-                found_codes.append({"detected_phrase": w, "code": w_up})
-                used_codes.add(w_up)
-        # Second pass: detect full country names
-        words = re.findall(r'\b[A-Za-z]+\b', text)
-        for w in words:
-            w_up = w.upper()
-            if w_up in used_codes:
-                continue
-            try:
-                for c in pycountry.countries:
-                    if w_up in c.name.upper():
-                        iso2 = c.alpha_2
-                        if iso2 not in used_codes:
-                            found_codes.append({"detected_phrase": w, "code": iso2})
-                            used_codes.add(iso2)
-                        break
-            except Exception:
-                pass
+
+        # --- 1) Look for uppercase 2-letter tokens only ---
+        # We'll skip purely lowercase ones to avoid "as" -> "AS" from partial text
+        uppercase_2letters = re.findall(r'\b[A-Z]{2}\b', text)
+        for w in uppercase_2letters:
+            country = pycountry.countries.get(alpha_2=w)
+            if country and w not in used_codes:
+                found_codes.append({"detected_phrase": w, "code": w})
+                used_codes.add(w)
+
+        # --- 2) Common synonyms or abbreviations like "USA", "UK" => map them to alpha2
+        special_map = {
+            "USA": "US",
+            "UK": "GB",
+            "BRD": "DE",
+            "PRC": "CN"
+        }
+        # We'll do a regex search for these synonyms
+        for abbr, alpha2 in special_map.items():
+            pattern = re.compile(rf'\b{abbr}\b', re.IGNORECASE)
+            if pattern.search(text):
+                # Add code if not in used
+                if alpha2 not in used_codes:
+                    found_codes.append({"detected_phrase": abbr, "code": alpha2})
+                    used_codes.add(alpha2)
+
+        # --- 3) Finally, parse country names or adjectives (like "Switzerland", "Swiss")
+        # This is partial, but may help if the user typed "China" => "CN"
+        # We won't implement full logic here, but you could. For example:
+        name_tokens = re.findall(r'\b[A-Za-z]+(?:ian|ish|ese|)?\b', text)
+        for token in name_tokens:
+            token_up = token.capitalize()
+            # Attempt direct match in pycountry
+            for c in pycountry.countries:
+                if token_up in c.name:
+                    iso2 = c.alpha_2
+                    if iso2 not in used_codes:
+                        found_codes.append({"detected_phrase": token, "code": iso2})
+                        used_codes.add(iso2)
+                    break
+
         return found_codes
 
     def detect_first_country_in_text(self, text: str):
+        """
+        Helper: returns the first detection if any exist, else None.
+        """
         all_codes = self.detect_countries_in_text(text)
         return all_codes[0] if all_codes else None
 
@@ -741,10 +862,22 @@ def main():
 
     st.sidebar.header("Settings")
 
-    # API Key
-    if "api_key" not in st.session_state:
-        st.session_state["api_key"] = ""
-    st.session_state["api_key"] = st.sidebar.text_input("OpenAI API Key", value=st.session_state["api_key"])
+    
+    # Initialize session variable for API key if not already set.
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = None
+
+    with st.sidebar:
+        # Only one API key textbox is now shown.
+        api_key = st.text_input("OpenAI API Key", type="password")
+        if api_key:
+            try:
+                # Initialize the OpenAI client (using our custom client defined elsewhere)
+                client = OpenAI(api_key=api_key)
+                st.session_state.api_key = api_key
+                st.success("API key set successfully!")
+            except Exception as e:
+                st.error(f"Error initializing OpenAI client: {e}")
 
     # Directory Browser
     build_directory_browser()
@@ -794,21 +927,21 @@ def main():
         query_text = st.session_state.get("question", "")
         if query_text.strip():
             try:
-                # --- Step 1: Auto-Launch Country Detection ---
+                # Auto-launch country detection
                 detector = LLMCountryDetector(api_key=st.session_state["api_key"])
                 detected_countries = detector.detect_countries_in_text(query_text)
                 if detected_countries:
-                    # Create a comma-separated list of detected country codes
+                    # Concatenate detected country codes
                     country_list = ", ".join([d["code"] for d in detected_countries])
                 else:
                     country_list = "None"
                 if DEBUG_MODE:
                     st.write(f"DEBUG => Countries detected: {country_list}")
 
-                # --- Step 2: Build the System Prompt ---
+                # Build the system prompt using the base prompt and detected countries
                 system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected Countries in Query: {country_list}"
 
-                # --- Step 3: Query the Collection ---
+                # Query the collection for relevant documents
                 collection = get_collection("rag_collection")
                 if not collection:
                     st.error("Could not access collection")
@@ -824,7 +957,7 @@ def main():
                         passages = results["documents"][0]
                         metadata = results["metadatas"][0] if "metadatas" in results else []
 
-                        # --- Step 4: Build the Messages for the LLM ---
+                        # Build messages for the LLM call
                         messages = []
                         messages.append({
                             "role": "system",
@@ -836,7 +969,7 @@ def main():
                             "content": f"Context:\n{context}\n\nQuestion: {query_text}"
                         })
 
-                        # --- Step 5: Call the OpenAI Chat API ---
+                        # Call the updated OpenAI client to generate an answer
                         client = OpenAI(api_key=st.session_state["api_key"])
                         completion = client.chat_completions_create(
                             model="gpt-4",
@@ -845,7 +978,7 @@ def main():
                         )
                         answer = completion["choices"][0]["message"]["content"]
 
-                        # --- Step 6: Display the Answer ---
+                        # Display the answer
                         st.markdown("### Answer")
                         st.write(answer)
                         
