@@ -3204,9 +3204,6 @@ def main():
                     else:
                         st.error("Invalid credentials")
 
-                if st.button("Login to User View"):
-                    st.info("Please run `streamlit run user_view.py` to launch the minimal UI, or set up navigation for it.")
-
             with tab2:
                 new_username = st.text_input("New Username", key="new_user")
                 new_password = st.text_input("New Password", type="password", key="new_pass")
