@@ -12,11 +12,13 @@ import os
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
-print("Working directory:", os.getcwd())
+
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = True  # Set to True to enable debug prints
+DEBUG_MODE = False  # Set to True to enable debug prints
+
+
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS

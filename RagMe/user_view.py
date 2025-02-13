@@ -14,8 +14,6 @@ import os
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
-print("Working directory:", os.getcwd())
-
 import json
 import requests
 import re
@@ -28,8 +26,10 @@ import hashlib
 import glob
 from typing import List, Dict, Any, Optional, Union, Set, Tuple
 
-DEBUG_MODE = True  # <--- Ensure we have a global switch for debug
+DEBUG_MODE = False  # <--- Ensure we have a global switch for debug
 
+if DEBUG_MODE:
+    print("Working directory:", os.getcwd())
 
 from pathlib import Path
 import json

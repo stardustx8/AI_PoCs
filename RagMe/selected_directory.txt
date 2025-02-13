@@ -1,1 +1,1 @@
-/Users/roshstd/Documents/VSCode/RagMe/chromadb_storage_user_Rosh/chroma_db
+/Users/roshstd/Documents/VSCode/RagMe/chromadb_storage_user_peter/chroma_db
