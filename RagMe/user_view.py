@@ -11,6 +11,8 @@ except ImportError:
     pass
 import os
 
+
+
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
@@ -102,6 +104,69 @@ BASE_DEFAULT_PROMPT = (
 # Must be the first Streamlit command
 st.set_page_config(page_title="RAG User View", layout="wide")
 
+def get_streamlit_root_path() -> str:
+    """
+    Get the root path the same way as in the main app.
+    On Streamlit Cloud, we have '/mount/src', otherwise fallback to local cwd.
+    """
+    if os.path.exists('/mount/src'):
+        # We’re on Streamlit Cloud
+        return '/mount/src/ai_pocs'
+    else:
+        # Local dev
+        return os.getcwd()
+    
+def get_user_specific_directory(user_id: str) -> dict:
+    """
+    Creates a directory structure:
+      <root>/chromadb_storage_user_{user_id}/
+         chroma_db/
+         images/
+         xml/
+    Exactly the same as the main app's approach, so we read/write in the same place.
+    """
+    root_path = get_streamlit_root_path()
+    base_dir = os.path.join(root_path, f"chromadb_storage_user_{user_id}")
+    chroma_dir = os.path.join(base_dir, "chroma_db")
+
+    if DEBUG_MODE:
+        print(f"DEBUG: Root path: {root_path}")
+        print(f"DEBUG: Using base directory: {base_dir}")
+        print(f"DEBUG: Chroma subfolder: {chroma_dir}")
+
+    dirs = {
+        "base": base_dir,
+        "chroma": chroma_dir,
+        "images": os.path.join(base_dir, "images"),
+        "xml": os.path.join(base_dir, "xml"),
+    }
+
+    for d in dirs.values():
+        os.makedirs(d, exist_ok=True)
+        if DEBUG_MODE:
+            print(f"DEBUG: Ensured directory exists: {d}")
+
+    return dirs
+
+def init_user_view_chroma_client(user_id: str):
+    """
+    In user_view.py, unify the path with get_user_specific_directory(user_id)
+    so it points to the same folder the main app uses.
+    """
+    if not user_id:
+        return None
+
+    dirs = get_user_specific_directory(user_id)
+    try:
+        client = chromadb.PersistentClient(
+            path=dirs["chroma"],
+            settings=Settings(anonymized_telemetry=False, allow_reset=True, is_persistent=True)
+        )
+        return client
+    except Exception as e:
+        st.error(f"Error initializing ChromaDB client: {str(e)}")
+        return None
+
 # Shared user functions
 def load_users():
     user_file = Path("users.json")
@@ -162,6 +227,19 @@ if st.sidebar.button("Logout", key="logout_button"):
 
 st.sidebar.success(f"Logged in as {st.session_state.user_id}")
 
+# -- Now you do the snippet:
+chroma_client = init_user_view_chroma_client(st.session_state.user_id)
+if chroma_client is None:
+    # If user_id was None or we couldn’t open a DB, do this:
+    st.error("Could not init Chroma for user: " + str(st.session_state.user_id))
+    st.stop()
+
+# Confirm we see a collection
+try:
+    all_collections = chroma_client.list_collections()
+    st.sidebar.write("Collections:", [c.name for c in all_collections])
+except Exception as e:
+    st.error(f"Error listing collections: {e}")
 
 ##############################################################################
 # 2) DIRECTORY PERSISTENCE
@@ -202,38 +280,6 @@ def list_subfolders(path: str) -> List[str]:
             st.write(f"DEBUG: Error listing subfolders: {str(e)}")
         return []
 
-def get_user_specific_directory(user_id: str) -> dict:
-    """
-    Creates a directory structure:
-      <root>/chromadb_storage_user_{user_id}/
-         chroma_db/
-         images/
-         xml/
-    """
-    root_path = get_streamlit_root_path()
-    base_dir = os.path.join(root_path, f"chromadb_storage_user_{user_id}")
-    chroma_dir = os.path.join(base_dir, "chroma_db")
-    
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Root path: {root_path}")
-        st.write(f"DEBUG: Using base directory: {base_dir}")
-        st.write(f"DEBUG: Chroma subfolder: {chroma_dir}")
-    
-    dirs = {
-        "base": base_dir,
-        "chroma": chroma_dir,
-        "images": os.path.join(base_dir, "images"),
-        "xml": os.path.join(base_dir, "xml")
-    }
-    
-    # Create directories if they don't exist
-    for dir_path in dirs.values():
-        os.makedirs(dir_path, exist_ok=True)
-        if DEBUG_MODE:
-            st.write(f"DEBUG: Ensured directory exists: {dir_path}")
-    
-    return dirs
-
 # Authentication UI
 if not st.session_state.is_authenticated:
     st.header("Login Required")
@@ -247,26 +293,6 @@ if not st.session_state.is_authenticated:
         else:
             st.error("Invalid credentials")
     st.stop()
-
-
-def init_user_view_chroma_client(user_id: str):
-    if not user_id:
-        return None
-        
-    dirs = get_user_specific_directory(user_id)
-    try:
-        client = chromadb.PersistentClient(
-            path=dirs["chroma"],
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-                is_persistent=True
-            )
-        )
-        return client
-    except Exception as e:
-        st.error(f"Error initializing ChromaDB client: {str(e)}")
-        return None
 
 
 
@@ -664,14 +690,7 @@ def query_collection(query: str, collection_name: str):
         st.error(f"Error querying collection: {e}")
         return None
 
-def get_streamlit_root_path() -> str:
-    """Get the root path for Streamlit Cloud or local development."""
-    if os.path.exists('/mount/src'):
-        # We're on Streamlit Cloud
-        return '/mount/src/ai_pocs'
-    else:
-        # Local development
-        return os.getcwd()
+
 
 # =======================
 # 6) generate_answer
@@ -1095,6 +1114,8 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
 # =======================
 def main():
     # st.set_page_config(page_title="Simple RAG UI + Dir Browser (No Login)", layout="wide")
+
+   
 
     st.sidebar.header("Settings")
 
