@@ -167,53 +167,71 @@ st.sidebar.success(f"Logged in as {st.session_state.user_id}")
 # 2) DIRECTORY PERSISTENCE
 ##############################################################################
 def load_selected_directory() -> str:
-    file_path = "selected_directory.txt"
+    """Load the previously selected directory or return the root path."""
+    root_path = get_streamlit_root_path()
+    file_path = os.path.join(root_path, "selected_directory.txt")
+    
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             dir_selected = f.read().strip()
             if os.path.isdir(dir_selected):
                 return dir_selected
-    return os.getcwd()
+    return root_path
 
 def save_selected_directory(directory: str):
-    with open("selected_directory.txt", "w") as f:
+    """Save the selected directory path."""
+    root_path = get_streamlit_root_path()
+    file_path = os.path.join(root_path, "selected_directory.txt")
+    
+    with open(file_path, "w") as f:
         f.write(directory)
 
-def list_subfolders(path: str):
+def list_subfolders(path: str) -> List[str]:
+    """List all visible subfolders in the given path."""
     try:
         entries = os.scandir(path)
-        subfolders = [e.name for e in entries if e.is_dir()]
-        subfolders.sort()
-        return subfolders
-    except Exception:
+        subfolders = []
+        for e in entries:
+            # Skip hidden folders and common system directories
+            if e.is_dir() and not e.name.startswith('.'):
+                if e.name not in {'.git', '.streamlit', '__pycache__'}:
+                    subfolders.append(e.name)
+        return sorted(subfolders)
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Error listing subfolders: {str(e)}")
         return []
 
 def get_user_specific_directory(user_id: str) -> dict:
     """
     Creates a directory structure:
-      <cwd>/chromadb_storage_user_{user_id}/
+      <root>/chromadb_storage_user_{user_id}/
          chroma_db/
          images/
          xml/
     """
-    base_dir = os.path.join(os.getcwd(), f"chromadb_storage_user_{user_id}")
+    root_path = get_streamlit_root_path()
+    base_dir = os.path.join(root_path, f"chromadb_storage_user_{user_id}")
     chroma_dir = os.path.join(base_dir, "chroma_db")
+    
     if DEBUG_MODE:
+        st.write(f"DEBUG: Root path: {root_path}")
         st.write(f"DEBUG: Using base directory: {base_dir}")
         st.write(f"DEBUG: Chroma subfolder: {chroma_dir}")
+    
     dirs = {
         "base": base_dir,
         "chroma": chroma_dir,
         "images": os.path.join(base_dir, "images"),
         "xml": os.path.join(base_dir, "xml")
     }
+    
+    # Create directories if they don't exist
     for dir_path in dirs.values():
         os.makedirs(dir_path, exist_ok=True)
         if DEBUG_MODE:
             st.write(f"DEBUG: Ensured directory exists: {dir_path}")
-    files = glob.glob(os.path.join(chroma_dir, "*"))
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Files in persist directory: {files}")
+    
     return dirs
 
 # Authentication UI
@@ -527,24 +545,34 @@ class LLMCountryDetector:
 # 4) get_chroma_client
 # =======================
 def get_chroma_client():
+    """Get ChromaDB client with proper path handling."""
     if not st.session_state.get("chroma_folder"):
-        st.warning("No Chroma DB folder is set. Use the directory browser in the sidebar.")
+        st.warning("No Chroma DB folder is selected. Use the directory browser in the sidebar.")
         return None
+        
     if not st.session_state.get("api_key"):
         st.error("Please set your OpenAI API key first.")
         return None
+        
     try:
-        # The user-chosen folder is in st.session_state["chroma_folder"]
         client = chromadb.PersistentClient(
             path=st.session_state["chroma_folder"],
             settings=Settings(
                 anonymized_telemetry=False,
-                allow_reset=True
+                allow_reset=True,
+                is_persistent=True
             )
         )
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG: ChromaDB client initialized with path: {st.session_state['chroma_folder']}")
+            
         return client
+        
     except Exception as e:
         st.error(f"Error initializing ChromaDB client: {str(e)}")
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Full error: {type(e).__name__}: {str(e)}")
         return None
 
 def get_collection(collection_name="rag_collection"):
@@ -584,7 +612,14 @@ def query_collection(query: str, collection_name: str):
         st.error(f"Error querying collection: {e}")
         return None
 
-
+def get_streamlit_root_path() -> str:
+    """Get the root path for Streamlit Cloud or local development."""
+    if os.path.exists('/mount/src'):
+        # We're on Streamlit Cloud
+        return '/mount/src/ai_pocs'
+    else:
+        # Local development
+        return os.getcwd()
 
 # =======================
 # 6) generate_answer
@@ -850,40 +885,61 @@ def list_subfolders(path: str):
 
 # 1) The function itself
 def build_directory_browser():
-    # If the user hasn't loaded a path or set a folder yet, do so now.
+    """Enhanced directory browser with proper root path handling."""
+    root_path = get_streamlit_root_path()
+    
+    # Initialize browse path if needed
     if "browse_path" not in st.session_state:
         st.session_state["browse_path"] = load_selected_directory()
-        # Immediately set chroma_folder to the loaded path
         st.session_state["chroma_folder"] = st.session_state["browse_path"]
-
-    # Create a single container in the sidebar so the UI appears once.
+    
     with st.sidebar.container():
         st.markdown("**Directory Browser**")
+        st.write(f"Root path: `{root_path}`")
         st.write(f"Current: `{st.session_state.browse_path}`")
-
+        
+        # Show available Chroma DBs
+        chroma_dbs = [d for d in list_subfolders(root_path) 
+                     if d.startswith('chromadb_storage_user_')]
+        
+        if chroma_dbs:
+            st.markdown("### Available Chroma DBs")
+            selected_db = st.selectbox(
+                "Select a Chroma DB",
+                options=["(Select a DB)"] + chroma_dbs,
+                key="chroma_db_select"
+            )
+            
+            if selected_db != "(Select a DB)":
+                db_path = os.path.join(root_path, selected_db, "chroma_db")
+                if st.button("Use Selected DB"):
+                    st.session_state["chroma_folder"] = db_path
+                    save_selected_directory(db_path)
+                    st.sidebar.success(f"Chroma folder set to: {db_path}")
+        
+        # Regular directory navigation
         subs = list_subfolders(st.session_state.browse_path)
-
-        # We'll use stable widget keys (no path-based suffix) to avoid duplicates
         choice = st.selectbox(
             "Subfolders",
             options=["(Select a folder)"] + subs,
             key="subfolder_selectbox"
         )
-        if subs and choice != "(Select a folder)":
-            if st.button("Go to Subfolder", key="go_subfolder_button"):
-                st.session_state.browse_path = os.path.join(st.session_state.browse_path, choice)
-                st.session_state["chroma_folder"] = st.session_state.browse_path
-
-        if st.button("Go Up One Level", key="go_up_button"):
-            parent = os.path.dirname(st.session_state.browse_path)
-            if parent and os.path.isdir(parent):
-                st.session_state.browse_path = parent
-                st.session_state["chroma_folder"] = st.session_state.browse_path
-
-        if st.button("Set as Chroma Folder", key="set_chroma_folder_button"):
-            st.session_state["chroma_folder"] = st.session_state.browse_path
-            save_selected_directory(st.session_state.browse_path)
-            st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
+        
+        cols = st.columns(2)
+        with cols[0]:
+            if subs and choice != "(Select a folder)":
+                if st.button("Go to Subfolder", key="go_subfolder_button"):
+                    new_path = os.path.join(st.session_state.browse_path, choice)
+                    if os.path.isdir(new_path):
+                        st.session_state.browse_path = new_path
+                        st.rerun()
+        
+        with cols[1]:
+            if st.button("Go Up One Level", key="go_up_button"):
+                parent = os.path.dirname(st.session_state.browse_path)
+                if parent and os.path.isdir(parent) and parent.startswith(root_path):
+                    st.session_state.browse_path = parent
+                    st.rerun()
 
 def parse_xml_for_chunks(text: str) -> List[Dict[str, Any]]:
     """Parse XML documents into chunks, properly handling images."""
