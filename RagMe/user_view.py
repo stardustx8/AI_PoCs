@@ -351,76 +351,66 @@ class OpenAIEmbeddingFunction:
 # 2) LLMCountryDetector
 # =======================
 class LLMCountryDetector:
-    """
-    This version ensures that all results — from JSON parsing OR regex fallback — go
-    through the same short-word checks in _deduplicate_and_validate. If the LLM says
-    {"detected_phrase": "the", "code": "CD"}, that gets caught and skipped.
-    """
-
     SYSTEM_PROMPT = """
-        You are a specialized assistant for extracting ALL country references in ANY user text, 
-        but you MUST carefully avoid partial-word triggers. Specifically:
-
-        1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
-           - Extract only 2-letter codes in uppercase form like "CH", "US", "CN", "DE", etc.
-           - Only do so when they appear as separate tokens, never as part of an unrelated word.
-           - If recognized code is alpha2 in pycountry, keep it.
-
-        2. FULL COUNTRY NAMES / ADJECTIVES:
-           - "Switzerland", "Swiss", "United States", "American", "China", "Chinese", etc.
-           - Futher advanced morphologies
-           - If synonyms or known abbreviations (e.g. "USA" -> "US") appear, transform them.
-
-        3. COMMON ABBREVIATIONS:
-           - "PRC" => "CN", "BRD" => "DE", "UK" => "GB", etc.
-           - "helve" => "CH", "helvetia" => "CH", "helvetien" => "CH", "allemania" => "DE", "alemannä" => "DE", and analogoues for other countries and their historic namings
-
-        4. CONTEXTUAL REFERENCES:
-           - "Swiss law" => "CH", "German regulations" => "DE", "Chinese market" => "CN"
-
-        EXTREMELY IMPORTANT:
-        - If a substring is short (e.g., "the", "to") or not uppercase, skip it.
-        - Only keep 2-letter uppercase codes if truly valid alpha2. 
-
-        Output EXACT JSON like:
-        [
-            {"detected_phrase": "DE", "code": "DE"}
-        ]
-        Do not add commentary or extra text.
-    """.strip()
+    Extract countries from the text and return their ISO 3166-1 alpha-2 codes.
+    
+    STRICT RULES:
+    1. For 2-letter codes:
+       - ONLY match if they are uppercase and exactly 2 letters (e.g., "CH", "US")
+       - ONLY if they are valid ISO 3166-1 alpha-2 codes
+       - Must be standalone (separated by spaces/punctuation)
+    
+    2. For words ≥4 letters:
+       - If it's a valid country name spelled like "china" or "China" or "CHINA", convert to ISO alpha-2 code
+       - Example: "Switzerland" -> "CH", "SWITZERLAND" -> "CH", "switzerland" -> "CH", "helvetia" -> "CH" etc.
+       - Example: "Germany" -> "DE", "gErMaNy" -> "DE", "germany" -> "DE", "GERMANY" -> "DE" etc.
+       - Ignore the case; yield all correctly written countries and ignore small typos, ex. "swizzerland" -> "CH"
+    
+    Output exact JSON format:
+    [
+        {"detected_phrase": "exact matched text", "code": "XX"}
+    ]
+    """
 
     def __init__(self, api_key: str, model: str = "chatgpt-4o-latest"):
-        if "api_key" not in st.session_state or not st.session_state["api_key"]:
-            raise ValueError("No API key in session for LLMCountryDetector.")
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.valid_codes = {country.alpha_2 for country in pycountry.countries}
 
-    def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
-        """One unified function that calls the LLM, tries JSON parse, 
-           then regex parse, then fallback. ALL results get validated."""
+    def detect_countries_in_text(self, text: str) -> List[Dict[str, str]]:
         if not text.strip():
             return []
 
-        # 1) Attempt LLM-based detection
-        raw_content = self._call_llm(text)
+        try:
+            response = self.client.chat_completions_create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.0
+            )
+            
+            llm_content = response["choices"][0]["message"]["content"].strip()
+            cleaned = re.sub(r'^```json\s*|\s*```$', '', llm_content)
+            
+            try:
+                data = json.loads(cleaned)
+                if isinstance(data, list):
+                    return [{
+                        "detected_phrase": item.get("detected_phrase", "").strip(),
+                        "code": item.get("code", "").strip().upper()
+                    } for item in data if isinstance(item, dict)]
+            except json.JSONDecodeError:
+                if DEBUG_MODE:
+                    st.write(f"DEBUG: Failed to parse LLM response: {llm_content}")
+                pass
 
-        # 2) Try JSON parse
-        raw_results = self._try_json(raw_content)
-        if raw_results:
-            validated = self._deduplicate_and_validate(raw_results)
-            if validated:
-                return validated
-        
-        # 3) Try regex parse
-        regex_pairs = self._extract_via_regex(raw_content)
-        if regex_pairs:
-            validated = self._deduplicate_and_validate(regex_pairs)
-            if validated:
-                return validated
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG: LLM error: {str(e)}")
 
-        # 4) Fallback
-        fallback_raw = self.naive_pycountry_detection(text)
-        return self._deduplicate_and_validate(fallback_raw)
+        return []
 
     def _call_llm(self, text: str) -> str:
         """Calls the LLM with our SYSTEM_PROMPT, returns raw content string."""
@@ -540,6 +530,68 @@ class LLMCountryDetector:
                         used.add(code)
 
         return final
+
+def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
+    coll = get_collection("rag_collection")
+    if not coll:
+        st.error("No ChromaDB collection found.")
+        return [], []
+
+    final_passages = []
+    final_metadatas = []
+    used_passages = set()
+    missing_countries = set(iso_codes)
+
+    if not iso_codes:
+        res = coll.query(
+            query_texts=[query_text],
+            n_results=n_results,
+            include=["documents", "metadatas"]
+        )
+        if res and res.get("documents"):
+            final_passages = res["documents"][0]
+            final_metadatas = res["metadatas"][0]
+        return final_passages, final_metadatas
+
+    for code in iso_codes:
+        try:
+            all_docs = coll.get(
+                where={"country_code": code},
+                include=["documents", "metadatas"]
+            )
+            
+            if all_docs and all_docs.get("documents"):
+                missing_countries.discard(code)
+                res = coll.query(
+                    query_texts=[query_text],
+                    where={"country_code": code},
+                    n_results=min(n_results, len(all_docs["documents"])),
+                    include=["documents", "metadatas"]
+                )
+                
+                if res and res.get("documents"):
+                    pass_list = res["documents"][0]
+                    meta_list = res["metadatas"][0]
+                    
+                    for p, m in zip(pass_list, meta_list):
+                        passage_key = f"{code}:{p}"
+                        if passage_key not in used_passages:
+                            final_passages.append(p)
+                            final_metadatas.append(m)
+                            used_passages.add(passage_key)
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Error querying {code}: {str(e)}")
+            continue
+
+    if missing_countries and len(iso_codes) == 1:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => No data found for single country query: {list(missing_countries)[0]}")
+        st.warning(f"No data found for country code: {list(missing_countries)[0]}")
+        return [], []
+
+    return final_passages, final_metadatas
 
 # =======================
 # 4) get_chroma_client
