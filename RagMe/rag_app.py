@@ -16,7 +16,7 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = True  # Set to True to enable debug prints
+DEBUG_MODE = False  # Set to True to enable debug prints
 
 
 
