@@ -10,6 +10,10 @@ try:
 except ImportError:
     pass
 import os
+
+# **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
+os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
+
 import json
 import requests
 import re
