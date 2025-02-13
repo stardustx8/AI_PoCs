@@ -119,6 +119,5 @@ wrapt==1.17.2
 zipp==3.21.0
 setuptools>=65.5.1
 wheel
+numpy==1.26.4
 pandas==2.1.4
-numpy
-streamlit==1.25.0
