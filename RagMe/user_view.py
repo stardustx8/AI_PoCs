@@ -586,6 +586,7 @@ def query_collection(query: str, collection_name: str):
 
 # =======================
 # 6) generate_answer
+# =======================
 def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
     """
     1) For each ISO code in iso_codes, do a strict filter query where={"country_code": code}.
@@ -600,7 +601,6 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
     final_passages = []
     final_metadatas = []
     used_passages = set()
-    missing_countries = set(iso_codes)  # Track which countries yield no results
 
     if not iso_codes:
         # fallback => broad search if no codes detected
@@ -630,7 +630,6 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
                 st.write(f"DEBUG => Found {len(all_docs.get('documents', []))} documents for {code}")
             
             if all_docs and all_docs.get("documents"):
-                missing_countries.discard(code)  # Found data for this country
                 # Then do similarity search within these documents
                 res = coll.query(
                     query_texts=[query_text],
@@ -665,14 +664,6 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
         st.write(f"DEBUG => Final results: {len(final_passages)} passages from {len(iso_codes)} countries")
         for i, (p, m) in enumerate(zip(final_passages, final_metadatas)):
             st.write(f"DEBUG => Passage {i+1} from {m.get('country_code', 'unknown')}")
-
-    # After all queries, check if we have any missing countries
-    if missing_countries and len(iso_codes) == 1:
-        # Special case: Single country query with no data
-        if DEBUG_MODE:
-            st.write(f"DEBUG => No data found for single country query: {list(missing_countries)[0]}")
-        st.warning(f"No data found for country code: {list(missing_countries)[0]}")
-        return [], []  # Return empty lists to trigger CASEB format in query_and_get_answer
 
     return final_passages, final_metadatas
 
