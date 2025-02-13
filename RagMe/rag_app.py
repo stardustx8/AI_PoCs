@@ -213,30 +213,42 @@ from chromadb.errors import ChromaError
 
 def init_chroma_client():
     if "api_key" not in st.session_state:
+        if DEBUG_MODE:
+            st.write("DEBUG: No API key found in session state.")
         return None, None
 
     dirs = get_user_specific_directory(st.session_state["user_id"])
-    
+    if DEBUG_MODE:
+        st.write("DEBUG: Using user directory settings:", dirs)
+
     try:
+        if DEBUG_MODE:
+            st.write("DEBUG: Initializing OpenAIEmbeddingFunction with provided API key.")
         embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
         
-        # Test the embedding function
+        if DEBUG_MODE:
+            st.write("DEBUG: Testing embedding function with input: ['test']")
         test_result = embedding_function(["test"])
         if DEBUG_MODE:
-            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
+            st.write(f"DEBUG: Embedding function test successful. Dimension: {len(test_result[0])}")
         
+        if DEBUG_MODE:
+            st.write("DEBUG: Creating ChromaDB PersistentClient with path:", dirs["chroma"])
         client = chromadb.PersistentClient(
             path=dirs["chroma"],
             settings=Settings(
                 anonymized_telemetry=False
             )
         )
-        
-        return client, embedding_function
-        
-    except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG => Error initializing ChromaDB client: {str(e)}")
+            st.write("DEBUG: ChromaDB client created successfully.")
+        return client, embedding_function
+
+    except Exception as e:
+        import traceback
+        if DEBUG_MODE:
+            st.write("DEBUG: Exception caught during init_chroma_client:")
+            st.write(traceback.format_exc())
         return None, None
     
 
