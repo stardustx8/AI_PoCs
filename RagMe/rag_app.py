@@ -148,8 +148,6 @@ import streamlit.components.v1 as components
 import uuid
 import re
 import hnswlib
-if not hasattr(hnswlib.Index, "file_handle_count"):
-    hnswlib.Index.file_handle_count = 0
 import json
 import time
 import numpy as np  # optional for numeric ops
@@ -215,34 +213,30 @@ from chromadb.errors import ChromaError
 
 def init_chroma_client():
     if "api_key" not in st.session_state:
-        st.write("DEBUG: No API key found in session state.")
         return None, None
 
     dirs = get_user_specific_directory(st.session_state["user_id"])
-    st.write("DEBUG: Using user directory settings:", dirs)
-
+    
     try:
-        st.write("DEBUG: Initializing OpenAIEmbeddingFunction with provided API key.")
         embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
         
-        st.write("DEBUG: Testing embedding function with input: ['test']")
+        # Test the embedding function
         test_result = embedding_function(["test"])
-        st.write("DEBUG: Embedding function test successful. Dimension:", len(test_result[0]))
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
         
-        st.write("DEBUG: Creating ChromaDB PersistentClient with path:", dirs["chroma"])
         client = chromadb.PersistentClient(
             path=dirs["chroma"],
             settings=Settings(
                 anonymized_telemetry=False
             )
         )
-        st.write("DEBUG: ChromaDB client created successfully.")
+        
         return client, embedding_function
-
+        
     except Exception as e:
-        import traceback
-        st.write("DEBUG: Exception caught during init_chroma_client:")
-        st.write(traceback.format_exc())
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error initializing ChromaDB client: {str(e)}")
         return None, None
     
 
