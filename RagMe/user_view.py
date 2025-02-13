@@ -780,47 +780,40 @@ def get_chroma_client():
         return None
 
 def get_collection(collection_name="rag_collection"):
-    """Get ChromaDB collection ensuring path consistency with main app."""
+    """Get collection with proper path handling."""
     if not st.session_state.get("api_key"):
         st.error("OpenAI API key not set")
         return None
         
     try:
-        # Use exact same path as main app
-        root_path = get_streamlit_root_path()
-        chroma_path = os.path.join(root_path, f"chromadb_storage_user_{st.session_state.user_id}", "chroma_db")
+        dirs = get_user_specific_directory(st.session_state.user_id)
         
-        # Debug output
-        st.write(f"DEBUG => Using Chroma path: {chroma_path}")
-        st.write(f"DEBUG => Path exists: {os.path.exists(chroma_path)}")
-        if os.path.exists(chroma_path):
-            st.write(f"DEBUG => Directory contents: {os.listdir(chroma_path)}")
-        
+        # Use simple client initialization
         client = chromadb.PersistentClient(
-            path=chroma_path,
+            path=dirs["chroma"],
             settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-                is_persistent=True
+                anonymized_telemetry=False
             )
         )
         
         embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
         
-        collections = client.list_collections()
-        st.write(f"DEBUG => Found collections: {[c.name for c in collections]}")
-        
-        if collection_name in [c.name for c in collections]:
+        try:
             collection = client.get_collection(
                 name=collection_name,
                 embedding_function=embedding_function
             )
-            st.write(f"DEBUG => Retrieved collection: {collection_name}")
-            peek = collection.peek()
-            st.write(f"DEBUG => Collection contents: {peek}")
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Retrieved collection: {collection_name}")
+                peek = collection.peek()
+                st.write(f"DEBUG => Collection contains {len(peek['ids'])} documents")
+                
             return collection
-        else:
-            st.write(f"DEBUG => Collection '{collection_name}' not found")
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => No existing collection found: {str(e)}")
             return None
             
     except Exception as e:

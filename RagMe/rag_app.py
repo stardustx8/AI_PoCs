@@ -223,68 +223,37 @@ from chromadb.utils import embedding_functions
 from chromadb.errors import ChromaError
 
 def init_chroma_client():
-    """Enhanced ChromaDB initialization for Streamlit Cloud"""
-    if "api_key" not in st.session_state or not st.session_state.user_id:
+    """Initialize ChromaDB client with simplified settings."""
+    if "api_key" not in st.session_state:
         return None, None
 
-    dirs = get_user_specific_directory(st.session_state.user_id)
-    verify_chroma_persistence(st.session_state.user_id)  # Debug check
+    dirs = get_user_specific_directory(st.session_state["user_id"])
     
     try:
-        # Create embedding function
-        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
+        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
+        
+        # Test the embedding function
         test_result = embedding_function(["test"])
-        
         if DEBUG_MODE:
-            st.write(f"DEBUG => Test embedding dimension: {len(test_result[0])}")
+            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
         
-        # Configure ChromaDB settings
-        settings = Settings(
-            anonymized_telemetry=False,
-            allow_reset=True,
-            is_persistent=True,
-            persist_directory=dirs["chroma"]
-        )
-        
-        # Initialize client with explicit persist_directory
+        # Simplified client initialization
         client = chromadb.PersistentClient(
             path=dirs["chroma"],
-            settings=settings
+            settings=Settings(
+                anonymized_telemetry=False
+            )
         )
         
-        # Immediately test persistence
-        collection_name = "test_persistence"
-        try:
-            # Create test collection
-            coll = client.create_collection(
-                name=collection_name,
-                embedding_function=embedding_function
-            )
-            
-            # Add test document
-            coll.add(
-                documents=["test document"],
-                metadatas=[{"test": True}],
-                ids=["test_id"]
-            )
-            
-            # Force persist
-            client.persist()
-            
-            # Clean up
-            client.delete_collection(collection_name)
-            
-            if DEBUG_MODE:
-                st.write("DEBUG => Persistence test successful")
-                
-        except Exception as e:
-            st.write(f"DEBUG => Persistence test failed: {e}")
+        if DEBUG_MODE:
+            st.write(f"DEBUG => ChromaDB client initialized with path: {dirs['chroma']}")
+            st.write(f"DEBUG => Available collections: {[c.name for c in client.list_collections()]}")
         
         return client, embedding_function
         
     except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG => ChromaDB initialization error: {e}")
+            st.write(f"DEBUG => Error initializing ChromaDB client: {str(e)}")
         return None, None
     
 
@@ -1876,60 +1845,37 @@ ${ data.answer || "No answer available." }
 # 6) CREATE/LOAD COLLECTION, ETC.
 ##############################################################################
 def create_or_load_collection(collection_name: str, force_recreate: bool = False):
-    """Create or load a collection with proper embedding function."""
+    """Create or load a collection with simpler handling."""
     global chroma_client, embedding_function_instance
     
     if embedding_function_instance is None:
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
-        st.stop()
+        return None
     
-    if DEBUG_MODE:
-        st.write(f"DEBUG: In create_or_load_collection, embedding_function_instance hash: {hash(embedding_function_instance)}")
-    
-    if force_recreate:
-        try:
-            chroma_client.delete_collection(name=collection_name)
-            if DEBUG_MODE:
-                st.write(f"DEBUG: Deleted existing collection '{collection_name}' due to force_recreate flag.")
-        except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG: Could not delete existing collection '{collection_name}': {e}")
-    
-    # List current collections
-    current_collections = [c.name for c in chroma_client.list_collections()]
-    
-    if DEBUG_MODE:
-        st.write(f"DEBUG: Current collections: {current_collections}")
-        
     try:
-        if collection_name in current_collections:
-            # Important: Explicitly set the embedding function when getting existing collection
-            coll = chroma_client.get_collection(
+        # Simple try to get existing collection first
+        try:
+            collection = chroma_client.get_collection(
                 name=collection_name,
                 embedding_function=embedding_function_instance
             )
             if DEBUG_MODE:
-                st.write(f"DEBUG: Retrieved existing collection '{collection_name}' with embedding function")
-        else:
-            # Create new collection with embedding function
-            coll = chroma_client.create_collection(
+                st.write(f"DEBUG => Retrieved existing collection: {collection_name}")
+            return collection
+        except:
+            # If not found, create new
+            collection = chroma_client.create_collection(
                 name=collection_name,
                 embedding_function=embedding_function_instance
             )
             if DEBUG_MODE:
-                st.write(f"DEBUG: Created new collection '{collection_name}' with embedding function")
-        
-        # Verify the collection exists and has the embedding function
-        if DEBUG_MODE:
-            st.write(f"DEBUG: Collection '{collection_name}' exists: {coll is not None}")
-            st.write(f"DEBUG: Collection embedding function hash: {hash(coll._embedding_function) if hasattr(coll, '_embedding_function') else 'None'}")
-        
-        return coll
-        
+                st.write(f"DEBUG => Created new collection: {collection_name}")
+            return collection
+            
     except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG: Error in create_or_load_collection: {str(e)}")
-        raise
+            st.write(f"DEBUG => Error in create_or_load_collection: {str(e)}")
+        return None
 
 
 
