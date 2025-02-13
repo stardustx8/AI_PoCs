@@ -1,7 +1,7 @@
 import hnswlib
 if not hasattr(hnswlib.Index, "file_handle_count"):
     hnswlib.Index.file_handle_count = 0
-    
+
 import streamlit as st
 st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
 
@@ -14,7 +14,7 @@ os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = True  # Set to True to enable debug prints
+DEBUG_MODE = False  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
