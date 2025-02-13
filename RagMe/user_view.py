@@ -106,66 +106,78 @@ st.set_page_config(page_title="RAG User View", layout="wide")
 
 def get_streamlit_root_path() -> str:
     """
-    Get the root path the same way as in the main app.
-    On Streamlit Cloud, we have '/mount/src', otherwise fallback to local cwd.
+    Returns the root path exactly as in the main app.
     """
     if os.path.exists('/mount/src'):
-        # We’re on Streamlit Cloud
         return '/mount/src/ai_pocs'
     else:
-        # Local dev
         return os.getcwd()
-    
+
 def get_user_specific_directory(user_id: str) -> dict:
     """
-    Creates a directory structure:
+    Constructs directories:
       <root>/chromadb_storage_user_{user_id}/
          chroma_db/
          images/
          xml/
-    Exactly the same as the main app's approach, so we read/write in the same place.
+    matching the main app’s logic.
     """
     root_path = get_streamlit_root_path()
     base_dir = os.path.join(root_path, f"chromadb_storage_user_{user_id}")
     chroma_dir = os.path.join(base_dir, "chroma_db")
-
+    
     if DEBUG_MODE:
         print(f"DEBUG: Root path: {root_path}")
         print(f"DEBUG: Using base directory: {base_dir}")
         print(f"DEBUG: Chroma subfolder: {chroma_dir}")
-
+    
     dirs = {
         "base": base_dir,
         "chroma": chroma_dir,
         "images": os.path.join(base_dir, "images"),
-        "xml": os.path.join(base_dir, "xml"),
+        "xml": os.path.join(base_dir, "xml")
     }
-
+    
     for d in dirs.values():
         os.makedirs(d, exist_ok=True)
         if DEBUG_MODE:
             print(f"DEBUG: Ensured directory exists: {d}")
-
+    
     return dirs
 
 def init_user_view_chroma_client(user_id: str):
     """
-    In user_view.py, unify the path with get_user_specific_directory(user_id)
-    so it points to the same folder the main app uses.
+    Initializes the ChromaDB client using the user-specific directory.
     """
     if not user_id:
         return None
-
     dirs = get_user_specific_directory(user_id)
     try:
+        from chromadb.config import Settings
+        import chromadb
         client = chromadb.PersistentClient(
             path=dirs["chroma"],
-            settings=Settings(anonymized_telemetry=False, allow_reset=True, is_persistent=True)
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=True
+            )
         )
+        if DEBUG_MODE:
+            print(f"DEBUG: ChromaDB client initialized with path: {dirs['chroma']}")
         return client
     except Exception as e:
-        st.error(f"Error initializing ChromaDB client: {str(e)}")
+        import streamlit as st
+        st.error(f"Error initializing ChromaDB client: {e}")
         return None
+
+def after_login_setup(user_id: str):
+    """
+    Immediately after login, force the user view to use the main app’s folder.
+    """
+    dirs = get_user_specific_directory(user_id)
+    st.session_state["chroma_folder"] = dirs["chroma"]
+    st.sidebar.success(f"ChromaDB path set to: {dirs['chroma']}")
 
 # Shared user functions
 def load_users():
@@ -217,24 +229,23 @@ if not st.session_state.is_authenticated:
                 st.success(msg)
             else:
                 st.error(msg)
-    st.stop()  # Do not display further content until logged in
+    st.stop()  # Stop here if not logged in
 
 # --- Logout Button in Sidebar ---
 if st.sidebar.button("Logout", key="logout_button"):
     st.session_state.user_id = None
     st.session_state.is_authenticated = False
-    st.rerun()  # or st.experimental_rerun() depending on your Streamlit version
+    st.rerun()  # Refresh page
 
 st.sidebar.success(f"Logged in as {st.session_state.user_id}")
 
-# -- Now you do the snippet:
+# --- Now, right after confirming login, initialize the Chroma client:
 chroma_client = init_user_view_chroma_client(st.session_state.user_id)
 if chroma_client is None:
-    # If user_id was None or we couldn’t open a DB, do this:
     st.error("Could not init Chroma for user: " + str(st.session_state.user_id))
     st.stop()
 
-# Confirm we see a collection
+# Confirm we see a collection:
 try:
     all_collections = chroma_client.list_collections()
     st.sidebar.write("Collections:", [c.name for c in all_collections])
