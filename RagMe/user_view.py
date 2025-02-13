@@ -241,25 +241,25 @@ st.sidebar.success(f"Logged in as {st.session_state.user_id}")
 
 # --- After login (login block is above and st.session_state.user_id is set) ---
 
-# Force the Chroma folder to the same folder as in the main app.
+# Force the correct folder (this code must run immediately after login)
 user_dirs = get_user_specific_directory(st.session_state.user_id)
 st.session_state["chroma_folder"] = user_dirs["chroma"]
 st.sidebar.success(f"ChromaDB path set to: {st.session_state['chroma_folder']}")
 
-# Initialize the Chroma client using the forced folder
+# Initialize the Chroma client with the same settings as the main app:
 from chromadb.config import Settings
 import chromadb
 
 chroma_client = chromadb.PersistentClient(
     path=st.session_state["chroma_folder"],
-    settings=Settings(anonymized_telemetry=False, allow_reset=True, is_persistent=True)
+    settings=Settings(anonymized_telemetry=False)  # No allow_reset or is_persistent flags here
 )
 
 if chroma_client is None:
     st.error("Could not init Chroma for user: " + str(st.session_state.user_id))
     st.stop()
 
-# Now, list the collections to verify
+# Now, list the collections:
 try:
     all_collections = chroma_client.list_collections()
     st.sidebar.write("Collections:", [c.name for c in all_collections])
