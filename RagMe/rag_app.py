@@ -1,7 +1,9 @@
 import streamlit as st
 st.set_page_config(page_title="RAG Demo", layout="wide", initial_sidebar_state="expanded")
 
-
+import hnswlib
+if not hasattr(hnswlib.Index, "file_handle_count"):
+    hnswlib.Index.file_handle_count = 0
 import os
 
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
@@ -143,10 +145,8 @@ try:
 except ImportError:
     pass
 
-import hnswlib
-if not hasattr(hnswlib.Index, "file_handle_count"):
-    hnswlib.Index.file_handle_count = 0
-    
+
+
 import chromadb
 from chromadb.config import Settings
 import streamlit.components.v1 as components
