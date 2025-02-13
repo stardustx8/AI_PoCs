@@ -1,4 +1,7 @@
 # user_view.py
+import hnswlib
+if not hasattr(hnswlib.Index, "file_handle_count"):
+    hnswlib.Index.file_handle_count = 0
 import streamlit as st
 import sys
 try:
