@@ -14,6 +14,8 @@ import os
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
+print("Working directory:", os.getcwd())
+
 import json
 import requests
 import re
