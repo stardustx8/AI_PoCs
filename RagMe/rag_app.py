@@ -3227,6 +3227,11 @@ def main():
 
         else:
             st.success(f"Logged in as {st.session_state.user_id}")
+
+            user_dirs = get_user_specific_directory(st.session_state.user_id)
+            st.markdown("#### Your Chroma Storage Path")
+            st.code(user_dirs["chroma"])
+            
             if st.button("Logout"):
                 # Clear user auth
                 st.session_state.user_id = None
