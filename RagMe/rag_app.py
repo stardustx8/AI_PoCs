@@ -2729,7 +2729,6 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
             if results and results.get('ids'):
                 # Delete the documents
                 collection.delete(ids=results['ids'])
-                temp_client.persist()
                 return True, f"Successfully deleted {len(results['ids'])} documents and associated images for country {iso_code}"
             else:
                 return True, f"No documents found for country {iso_code}"
