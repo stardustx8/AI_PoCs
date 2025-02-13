@@ -22,7 +22,7 @@ import hashlib
 import glob
 from typing import List, Dict, Any, Optional, Union, Set, Tuple
 
-DEBUG_MODE = False  # <--- Ensure we have a global switch for debug
+DEBUG_MODE = True  # <--- Ensure we have a global switch for debug
 
 
 from pathlib import Path
