@@ -11,7 +11,7 @@ import chromadb
 from chromadb.config import Settings
 import hashlib
 import glob
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union, Set, Tuple
 
 DEBUG_MODE = False  # <--- Ensure we have a global switch for debug
 
@@ -569,6 +569,11 @@ def query_collection(query: str, collection_name: str):
         st.error(f"Error querying collection: {e}")
         return None
 
+
+
+# =======================
+# 6) generate_answer
+# =======================
 def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
     """
     1) For each ISO code in iso_codes, do a strict filter query where={"country_code": code}.
@@ -598,34 +603,76 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
 
     # If iso_codes exist, do separate queries for each code
     for code in iso_codes:
-        # Strict filter => only chunks labeled with country_code == code
-        res = coll.query(
-            query_texts=[query_text],
-            where={"country_code": code},
-            n_results=n_results,
-            include=["documents", "metadatas"]
-        )
-        if res and res.get("documents"):
-            pass_list = res["documents"][0]
-            meta_list = res["metadatas"][0]
-            for p, m in zip(pass_list, meta_list):
-                if p not in used_passages:
-                    final_passages.append(p)
-                    final_metadatas.append(m)
-                    used_passages.add(p)
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Querying for country code: {code}")
+        
+        try:
+            # Get ALL documents for this country first
+            all_docs = coll.get(
+                where={"country_code": code},
+                include=["documents", "metadatas"]
+            )
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Found {len(all_docs.get('documents', []))} documents for {code}")
+            
+            if all_docs and all_docs.get("documents"):
+                # Then do similarity search within these documents
+                res = coll.query(
+                    query_texts=[query_text],
+                    where={"country_code": code},
+                    n_results=min(n_results, len(all_docs["documents"])),
+                    include=["documents", "metadatas"]
+                )
+                
+                if res and res.get("documents"):
+                    pass_list = res["documents"][0]
+                    meta_list = res["metadatas"][0]
+                    
+                    if DEBUG_MODE:
+                        st.write(f"DEBUG => Retrieved {len(pass_list)} relevant passages for {code}")
+                    
+                    for p, m in zip(pass_list, meta_list):
+                        passage_key = f"{code}:{p}"
+                        if passage_key not in used_passages:
+                            final_passages.append(p)
+                            final_metadatas.append(m)
+                            used_passages.add(passage_key)
+                            
+                elif DEBUG_MODE:
+                    st.write(f"DEBUG => No relevant passages found for {code}")
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Error querying {code}: {str(e)}")
+            continue
+
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Final results: {len(final_passages)} passages from {len(iso_codes)} countries")
+        for i, (p, m) in enumerate(zip(final_passages, final_metadatas)):
+            st.write(f"DEBUG => Passage {i+1} from {m.get('country_code', 'unknown')}")
 
     return final_passages, final_metadatas
 
-# =======================
-# 6) generate_answer
-# =======================
+def extract_image_data(text: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
+    """Extract image data from chunk text or metadata."""
+    if metadata and metadata.get("full_image_chunk"):
+        full_chunk = metadata["full_image_chunk"]
+        base64_match = re.search(r"base64=['\"]([^'\"]+)['\"]", full_chunk)
+        mime_match = re.search(r"mime_type=['\"]([^'\"]+)['\"]", full_chunk)
+        
+        if base64_match and mime_match:
+            return {
+                "base64": base64_match.group(1),
+                "mime_type": mime_match.group(1)
+            }
+    return None
+
 def query_and_get_answer():
-    # Ensure the API key is set.
     if not st.session_state.get("api_key"):
         st.error("Please set your OpenAI API key")
         return
 
-    # Retrieve the query from session state (bound via key "question").
     query = st.session_state.get("question", "")
     if not query:
         st.warning("Please enter a question")
@@ -634,7 +681,6 @@ def query_and_get_answer():
     if DEBUG_MODE:
         st.write(f"DEBUG => Processing query: '{query}'")
 
-    # --- AUTO-LAUNCH COUNTRY DETECTION ---
     try:
         detector = LLMCountryDetector(api_key=st.session_state["api_key"])
         detected_countries = detector.detect_countries_in_text(query)
@@ -643,76 +689,95 @@ def query_and_get_answer():
         detected_countries = []
 
     if detected_countries:
-        # Create a comma‑separated list of detected country codes.
         country_list = ", ".join([d["code"] for d in detected_countries])
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Countries detected: {country_list}")
     else:
         country_list = "None"
 
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Countries detected: {country_list}")
+    iso_codes = [d["code"] for d in detected_countries]
+    passages, metadata = get_strict_filtered_passages(query, iso_codes, n_results=5)
 
-    # --- BUILD THE SYSTEM PROMPT ---
-    # Incorporate the BASE_DEFAULT_PROMPT and add a note about detected countries.
-    system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected Countries in Query: {country_list}"
-
-    # --- QUERY THE COLLECTION ---
-    collection = get_collection("rag_collection")
-    if not collection:
-        st.error("Could not access collection")
+    if not passages:
+        st.warning("No relevant documents found")
         return
 
+    # Organize passages by country
+    country_passages = {}
+    has_images = False
+    for p, m in zip(passages, metadata):
+        country_code = m.get("country_code", "UNKNOWN")
+        if country_code not in country_passages:
+            country_passages[country_code] = []
+            
+        if m.get("content_type") == "image":
+            has_images = True
+            image_data = extract_image_data(p, metadata=m)
+            if image_data:
+                country_passages[country_code].append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image_data['mime_type']};base64,{image_data['base64']}",
+                        "detail": "high"
+                    }
+                })
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => Added image data for {country_code}")
+        else:
+            country_passages[country_code].append({
+                "type": "text",
+                "text": p
+            })
+
+    messages = []
+    system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected Countries in Query: {country_list}"
+    messages.append({"role": "system", "content": system_message})
+
+    content = []
+    for code in iso_codes:
+        if code in country_passages:
+            content.append({
+                "type": "text",
+                "text": f"\n[Information for {code}]"
+            })
+            content.extend(country_passages[code])
+            content.append({
+                "type": "text",
+                "text": "-" * 40
+            })
+    
+    content.append({
+        "type": "text",
+        "text": f"\nQuestion: {query}"
+    })
+    
+    messages.append({"role": "user", "content": content})
+
     try:
-        results = collection.query(
-            query_texts=[query],
-            n_results=5,
-            include=["documents", "metadatas"]
-        )
-
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Query results: {results}")
-
-        if not results or not results.get("documents"):
-            st.warning("No relevant documents found")
-            return
-
-        passages = results["documents"][0]
-        metadata = results["metadatas"][0] if "metadatas" in results else []
-
-        # --- BUILD THE MESSAGES FOR THE LLM ---
-        messages = []
-        messages.append({
-            "role": "system",
-            "content": system_message
-        })
-
-        # Concatenate all retrieved passages to form the context.
-        context = "\n\n".join(passages)
-        messages.append({
-            "role": "user",
-            "content": f"Context:\n{context}\n\nQuestion: {query}"
-        })
-
-        # --- CALL THE OPENAI CHAT API ---
         client = OpenAI(api_key=st.session_state["api_key"])
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Sending chat request to OpenAI, model='chatgpt-4o-latest', #messages={len(messages)}")
+        
         completion = client.chat_completions_create(
             model="chatgpt-4o-latest",
             messages=messages,
+            max_tokens=1024,
             temperature=0.2
         )
-        # after you get 'answer'
         answer_raw = completion["choices"][0]["message"]["content"]
-        # strip any <HEADER_LEVEL1> or similar tags
         answer_clean = re.sub(r"<[^>]*>", "", answer_raw)
 
         st.markdown("### Answer")
         st.write(answer_clean)
 
         if DEBUG_MODE:
-            st.markdown("### Debug: Retrieved Passages")
-            for i, (passage, meta) in enumerate(zip(passages, metadata)):
-                st.markdown(f"**Passage {i+1}:**")
-                st.write(passage)
-                st.write(f"Metadata: {meta}")
+            st.markdown("### Debug: Retrieved Passages by Country")
+            for code, passages in country_passages.items():
+                st.markdown(f"**Country: {code}**")
+                for i, p in enumerate(passages, 1):
+                    st.markdown(f"Passage {i}:")
+                    st.write(p.get("text", "(Image data)") if isinstance(p, dict) else p)
+                st.write("-" * 40)
 
     except Exception as e:
         st.error(f"Error generating answer: {str(e)}")
@@ -737,7 +802,7 @@ def generate_answer(query: str, passages, metadata):
             model="chatgpt-4o-latest",
             messages=messages,
             max_tokens=1500,
-            temperature=0.2
+            temperature=0.3
         )
         return resp["choices"][0]["message"]["content"]
     except Exception as e:
@@ -794,6 +859,103 @@ def build_directory_browser():
             st.session_state["chroma_folder"] = st.session_state.browse_path
             save_selected_directory(st.session_state.browse_path)
             st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
+
+def parse_xml_for_chunks(text: str) -> List[Dict[str, Any]]:
+    """Parse XML documents into chunks, properly handling images."""
+    chunks = []
+    xml_docs = text.split('<?xml version="1.0" encoding="UTF-8"?>')
+    
+    for doc in xml_docs:
+        if not doc.strip():
+            continue
+            
+        doc = '<?xml version="1.0" encoding="UTF-8"?>' + doc
+        try:
+            chunk_data = parse_single_xml_doc(doc)
+            chunks.extend(chunk_data)
+        except Exception as e:
+            st.error(f"Error parsing XML document: {e}")
+            
+    update_stage("chunk", {
+        "chunks": [f"{c['text'][:200]}..." for c in chunks[:5]],
+        "full_chunks": [{
+            "text": c["text"],
+            "country": c["metadata"]["country_code"],
+            "metadata": c["metadata"]
+        } for c in chunks],
+        "total_chunks": len(chunks)
+    })
+    return chunks
+
+def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict[str, Any]]:
+    """Processes XML doc with proper image handling."""
+    import xml.etree.ElementTree as ET
+    from io import StringIO
+
+    tree = ET.parse(StringIO(xml_text))
+    root = tree.getroot()
+    country_code = root.tag.upper()
+
+    meta = {}
+    metadata_elem = root.find('metadata')
+    if metadata_elem is not None:
+        for child in metadata_elem:
+            meta[child.tag] = (child.text or "").strip()
+
+    content_elem = root.find('content')
+    if content_elem is None:
+        return []
+
+    chunks = []
+    text_buffer = []
+    buf_size = 0
+
+    def flush_buffer():
+        nonlocal text_buffer, buf_size
+        if text_buffer:
+            combined_txt = "\n".join(text_buffer).strip()
+            if combined_txt:
+                chunks.append({
+                    "text": combined_txt,
+                    "metadata": {
+                        **meta,
+                        "country_code": country_code,
+                        "content_type": "text"
+                    }
+                })
+        text_buffer = []
+        buf_size = 0
+
+    if content_elem.text and content_elem.text.strip():
+        text_buffer.append(content_elem.text.strip())
+        buf_size += len(content_elem.text)
+
+    for element in content_elem:
+        if element.tag.lower() == "image":
+            flush_buffer()
+            
+            image_data_node = element.find('image_data')
+            if image_data_node is not None:
+                mime_type = image_data_node.get('mime_type', 'image/jpeg')
+                base64_data = image_data_node.get('base64', '')
+                
+                if base64_data:
+                    path_node = element.find('path')
+                    path = path_node.text if path_node is not None else "unknown_path"
+                    
+                    chunks.append({
+                        "text": f"<image_data mime_type='{mime_type}' base64='{base64_data}' />",
+                        "metadata": {
+                            **meta,
+                            "country_code": country_code,
+                            "content_type": "image",
+                            "mime_type": mime_type,
+                            "path": path
+                        }
+                    })
+
+    flush_buffer()
+    return chunks
 
 # =======================
 # 8) MAIN UI (No login)
@@ -862,83 +1024,13 @@ def main():
 
     # --- Input the user's question (bound to session state key "question") ---
     st.text_input(
-        "Your question:", 
-        key="question", 
-        help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ...")
+    "Your question:", 
+    key="question", 
+    help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ...")
+
     # --- Primary "Get Answer" Button ---
     if st.button("Get Answer"):
-        query_text = st.session_state.get("question", "")
-        if not query_text.strip():
-            st.warning("Please enter a question.")
-        else:
-            # 1) Run country detection
-            try:
-                detector = LLMCountryDetector(api_key=st.session_state["api_key"])
-                detected_list = detector.detect_countries_in_text(query_text)
-            except Exception as e:
-                st.error(f"Error during country detection: {e}")
-                detected_list = []
-
-            # 2) Show a nice globe with user term vs. identified country ISO
-            if detected_list:
-                st.write("🌍 **You seem to request legal information for the following countries:**")
-                for item in detected_list:
-                    # e.g. "'Switzerland' -> CH"
-                    st.write(f"  • '{item['detected_phrase']}' → {item['code']}")
-            else:
-                st.write("❌ No country codes detected in query")
-
-            # 3) Build the system prompt
-            if detected_list:
-                c_str = ", ".join([d["code"] for d in detected_list])
-            else:
-                c_str = "None"
-            system_message = BASE_DEFAULT_PROMPT + f"\n\nDetected countries: {c_str}"
-
-            # 4) Query the rag_collection
-            coll = get_collection("rag_collection")
-            if not coll:
-                st.error("No ChromaDB collection available. Check your folder or API key.")
-            else:
-                # 1) Convert the detected_countries into a list of iso codes:
-                iso_codes = [d["code"] for d in detected_list]
-
-                # 2) Retrieve strictly filtered chunks
-                passages, metadata = get_strict_filtered_passages(query_text, iso_codes, n_results=5)
-
-                if not passages:
-                    st.warning("No relevant documents found with strict filtering.")
-                    return
-
-                # 3) Build the final context for GPT
-                context = "\n\n".join(passages)
-
-                messages = []
-                messages.append({"role": "system", "content": system_message})
-                messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query_text}"})
-
-                try:
-                    client = OpenAI(api_key=st.session_state["api_key"])
-                    completion = client.chat_completions_create(
-                        model="chatgpt-4o-latest",
-                        messages=messages,
-                        temperature=0.2
-                    )
-                    answer_raw = completion["choices"][0]["message"]["content"]
-                    # Strip <...> tags
-                    answer_clean = re.sub(r"<[^>]*>", "", answer_raw)
-
-                    st.markdown("### Answer")
-                    st.write(answer_clean)
-
-                    if DEBUG_MODE:
-                        st.markdown("### Debug: Retrieved Passages")
-                        for i, (p, m) in enumerate(zip(passages, metadata)):
-                            st.markdown(f"**Passage {i+1}**:")
-                            st.write(p)
-                            st.write(f"Metadata: {m}")
-                except Exception as e:
-                    st.error(f"Error generating final answer: {e}")
+        query_and_get_answer()
 
 if __name__ == "__main__":
     main()
