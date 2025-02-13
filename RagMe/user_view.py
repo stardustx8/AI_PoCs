@@ -270,6 +270,43 @@ except Exception as e:
 ##############################################################################
 # 2) DIRECTORY PERSISTENCE
 ##############################################################################
+
+
+def verify_chroma_persistence(user_id: str):
+    """Debug ChromaDB persistence on Streamlit Cloud"""
+    dirs = get_user_specific_directory(user_id)
+    chroma_path = dirs["chroma"]
+    
+    # Check directory contents
+    st.write("DEBUG => Checking Chroma directory:")
+    st.write(f"Path: {chroma_path}")
+    
+    if not os.path.exists(chroma_path):
+        st.write("ERROR: Directory does not exist!")
+        return
+        
+    # List all files
+    files = []
+    for root, dirs, filenames in os.walk(chroma_path):
+        for f in filenames:
+            full_path = os.path.join(root, f)
+            size = os.path.getsize(full_path)
+            files.append(f"{full_path} ({size} bytes)")
+    
+    st.write("Files found:")
+    for f in files:
+        st.write(f)
+        
+    # Check permissions
+    st.write("\nPermissions:")
+    try:
+        st.write(f"Read: {os.access(chroma_path, os.R_OK)}")
+        st.write(f"Write: {os.access(chroma_path, os.W_OK)}")
+        st.write(f"Execute: {os.access(chroma_path, os.X_OK)}")
+    except Exception as e:
+        st.write(f"Error checking permissions: {e}")
+
+
 def load_selected_directory() -> str:
     """Load the previously selected directory or return the root path."""
     root_path = get_streamlit_root_path()
@@ -743,15 +780,24 @@ def get_chroma_client():
         return None
 
 def get_collection(collection_name="rag_collection"):
-    """Get ChromaDB collection with proper embedding function."""
+    """Get ChromaDB collection ensuring path consistency with main app."""
     if not st.session_state.get("api_key"):
         st.error("OpenAI API key not set")
         return None
         
     try:
-        dirs = get_user_specific_directory(st.session_state.user_id)
+        # Use exact same path as main app
+        root_path = get_streamlit_root_path()
+        chroma_path = os.path.join(root_path, f"chromadb_storage_user_{st.session_state.user_id}", "chroma_db")
+        
+        # Debug output
+        st.write(f"DEBUG => Using Chroma path: {chroma_path}")
+        st.write(f"DEBUG => Path exists: {os.path.exists(chroma_path)}")
+        if os.path.exists(chroma_path):
+            st.write(f"DEBUG => Directory contents: {os.listdir(chroma_path)}")
+        
         client = chromadb.PersistentClient(
-            path=dirs["chroma"],
+            path=chroma_path,
             settings=Settings(
                 anonymized_telemetry=False,
                 allow_reset=True,
@@ -759,33 +805,26 @@ def get_collection(collection_name="rag_collection"):
             )
         )
         
-        # Initialize embedding function exactly as in main app
         embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
         
-        # Test the embedding function
-        test_result = embedding_function(["test"])
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
-            
-        try:
-            # Get existing collection with embedding function
+        collections = client.list_collections()
+        st.write(f"DEBUG => Found collections: {[c.name for c in collections]}")
+        
+        if collection_name in [c.name for c in collections]:
             collection = client.get_collection(
                 name=collection_name,
                 embedding_function=embedding_function
             )
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Retrieved collection '{collection_name}'")
-                st.write(f"DEBUG => Collection embedding function hash: {hash(collection._embedding_function)}")
+            st.write(f"DEBUG => Retrieved collection: {collection_name}")
+            peek = collection.peek()
+            st.write(f"DEBUG => Collection contents: {peek}")
             return collection
-            
-        except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Error getting collection: {str(e)}")
+        else:
+            st.write(f"DEBUG => Collection '{collection_name}' not found")
             return None
             
     except Exception as e:
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Error in get_collection: {str(e)}")
+        st.write(f"DEBUG => Error in get_collection: {str(e)}")
         return None
     
 def query_collection(query: str, collection_name: str):
@@ -1229,6 +1268,7 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
     flush_buffer()
     return chunks
 
+
 # =======================
 # 8) MAIN UI (No login)
 # =======================
@@ -1262,6 +1302,12 @@ def main():
     # After login, force Chroma path to user's directory
     user_dirs = get_user_specific_directory(st.session_state.user_id)
     st.session_state["chroma_folder"] = user_dirs["chroma"]
+
+    root_path = get_streamlit_root_path()
+    chroma_path = os.path.join(root_path, f"chromadb_storage_user_{st.session_state.user_id}", "chroma_db")
+    st.session_state["chroma_folder"] = chroma_path
+    
+    st.write(f"DEBUG => Set Chroma folder to: {chroma_path}")
     
     if DEBUG_MODE:
         st.write(f"DEBUG => Using Chroma path: {st.session_state['chroma_folder']}")
