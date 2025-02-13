@@ -11,8 +11,6 @@ except ImportError:
     pass
 import os
 
-
-
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
@@ -24,15 +22,12 @@ from openai import OpenAI
 import openai
 import chromadb
 from chromadb.config import Settings
-import unicodedata
 import hashlib
 import glob
 from typing import List, Dict, Any, Optional, Union, Set, Tuple
 
-DEBUG_MODE = True  # <--- Ensure we have a global switch for debug
+DEBUG_MODE = False  # <--- Ensure we have a global switch for debug
 
-if DEBUG_MODE:
-    print("Working directory:", os.getcwd())
 
 from pathlib import Path
 import json
@@ -47,7 +42,7 @@ BASE_DEFAULT_PROMPT = (
     "    thorough, accurate results.\n"
     "  </ROLE>\n\n"
     "  <INSTRUCTIONS>\n"
-    "    1. YOU MUST NEVER correct the RAG documents; what is written in them is to be considered the truth. Always rely exclusively on the RAG documents for any information.\n\n"
+    "    1. Always rely exclusively on the RAG documents for any factual information.\n\n"
     "    2. EXTREMELY IMPORTANT:\n"
     "       - If the user’s query relates to **only one** country and your RAG does **not** have matching information\n"
     "         for that country, you must use the **CASEB** structure (but do NEVER mention 'CASEB' as a term to the user, as this is only for your internal referencing.) .\n"
@@ -105,81 +100,6 @@ BASE_DEFAULT_PROMPT = (
 # Must be the first Streamlit command
 st.set_page_config(page_title="RAG User View", layout="wide")
 
-def get_streamlit_root_path() -> str:
-    """
-    Returns the root path exactly as in the main app.
-    """
-    if os.path.exists('/mount/src'):
-        return '/mount/src/ai_pocs'
-    else:
-        return os.getcwd()
-
-def get_user_specific_directory(user_id: str) -> dict:
-    """
-    Constructs directories:
-      <root>/chromadb_storage_user_{user_id}/
-         chroma_db/
-         images/
-         xml/
-    matching the main app’s logic.
-    """
-    root_path = get_streamlit_root_path()
-    base_dir = os.path.join(root_path, f"chromadb_storage_user_{user_id}")
-    chroma_dir = os.path.join(base_dir, "chroma_db")
-    
-    if DEBUG_MODE:
-        print(f"DEBUG: Root path: {root_path}")
-        print(f"DEBUG: Using base directory: {base_dir}")
-        print(f"DEBUG: Chroma subfolder: {chroma_dir}")
-    
-    dirs = {
-        "base": base_dir,
-        "chroma": chroma_dir,
-        "images": os.path.join(base_dir, "images"),
-        "xml": os.path.join(base_dir, "xml")
-    }
-    
-    for d in dirs.values():
-        os.makedirs(d, exist_ok=True)
-        if DEBUG_MODE:
-            print(f"DEBUG: Ensured directory exists: {d}")
-    
-    return dirs
-
-def init_user_view_chroma_client(user_id: str):
-    """
-    Initializes the ChromaDB client using the user-specific directory.
-    """
-    if not user_id:
-        return None
-    dirs = get_user_specific_directory(user_id)
-    try:
-        from chromadb.config import Settings
-        import chromadb
-        client = chromadb.PersistentClient(
-            path=dirs["chroma"],
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-                is_persistent=True
-            )
-        )
-        if DEBUG_MODE:
-            print(f"DEBUG: ChromaDB client initialized with path: {dirs['chroma']}")
-        return client
-    except Exception as e:
-        import streamlit as st
-        st.error(f"Error initializing ChromaDB client: {e}")
-        return None
-
-def after_login_setup(user_id: str):
-    """
-    Immediately after login, force the user view to use the main app’s folder.
-    """
-    dirs = get_user_specific_directory(user_id)
-    st.session_state["chroma_folder"] = dirs["chroma"]
-    st.sidebar.success(f"ChromaDB path set to: {dirs['chroma']}")
-
 # Shared user functions
 def load_users():
     user_file = Path("users.json")
@@ -230,118 +150,69 @@ if not st.session_state.is_authenticated:
                 st.success(msg)
             else:
                 st.error(msg)
-    st.stop()  # Stop here if not logged in
+    st.stop()  # Do not display further content until logged in
 
 # --- Logout Button in Sidebar ---
 if st.sidebar.button("Logout", key="logout_button"):
     st.session_state.user_id = None
     st.session_state.is_authenticated = False
-    st.rerun()  # Refresh page
+    st.rerun()  # or st.experimental_rerun() depending on your Streamlit version
 
 st.sidebar.success(f"Logged in as {st.session_state.user_id}")
 
-# --- After login (login block is above and st.session_state.user_id is set) ---
-
-# Force the Chroma folder to the same folder as in the main app.
-user_dirs = get_user_specific_directory(st.session_state.user_id)
-st.session_state["chroma_folder"] = user_dirs["chroma"]
-st.sidebar.success(f"ChromaDB path set to: {st.session_state['chroma_folder']}")
-
-# Initialize the Chroma client using the forced folder
-from chromadb.config import Settings
-import chromadb
-
-chroma_client = chromadb.PersistentClient(
-    path=st.session_state["chroma_folder"],
-    settings=Settings(anonymized_telemetry=False, allow_reset=True, is_persistent=True)
-)
-
-if chroma_client is None:
-    st.error("Could not init Chroma for user: " + str(st.session_state.user_id))
-    st.stop()
-
-# Now, list the collections to verify
-try:
-    all_collections = chroma_client.list_collections()
-    st.sidebar.write("Collections:", [c.name for c in all_collections])
-except Exception as e:
-    st.error(f"Error listing collections: {e}")
 
 ##############################################################################
 # 2) DIRECTORY PERSISTENCE
 ##############################################################################
-
-
-def verify_chroma_persistence(user_id: str):
-    """Debug ChromaDB persistence on Streamlit Cloud"""
-    dirs = get_user_specific_directory(user_id)
-    chroma_path = dirs["chroma"]
-    
-    # Check directory contents
-    st.write("DEBUG => Checking Chroma directory:")
-    st.write(f"Path: {chroma_path}")
-    
-    if not os.path.exists(chroma_path):
-        st.write("ERROR: Directory does not exist!")
-        return
-        
-    # List all files
-    files = []
-    for root, dirs, filenames in os.walk(chroma_path):
-        for f in filenames:
-            full_path = os.path.join(root, f)
-            size = os.path.getsize(full_path)
-            files.append(f"{full_path} ({size} bytes)")
-    
-    st.write("Files found:")
-    for f in files:
-        st.write(f)
-        
-    # Check permissions
-    st.write("\nPermissions:")
-    try:
-        st.write(f"Read: {os.access(chroma_path, os.R_OK)}")
-        st.write(f"Write: {os.access(chroma_path, os.W_OK)}")
-        st.write(f"Execute: {os.access(chroma_path, os.X_OK)}")
-    except Exception as e:
-        st.write(f"Error checking permissions: {e}")
-
-
 def load_selected_directory() -> str:
-    """Load the previously selected directory or return the root path."""
-    root_path = get_streamlit_root_path()
-    file_path = os.path.join(root_path, "selected_directory.txt")
-    
+    file_path = "selected_directory.txt"
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             dir_selected = f.read().strip()
             if os.path.isdir(dir_selected):
                 return dir_selected
-    return root_path
+    return os.getcwd()
 
 def save_selected_directory(directory: str):
-    """Save the selected directory path."""
-    root_path = get_streamlit_root_path()
-    file_path = os.path.join(root_path, "selected_directory.txt")
-    
-    with open(file_path, "w") as f:
+    with open("selected_directory.txt", "w") as f:
         f.write(directory)
 
-def list_subfolders(path: str) -> List[str]:
-    """List all visible subfolders in the given path."""
+def list_subfolders(path: str):
     try:
         entries = os.scandir(path)
-        subfolders = []
-        for e in entries:
-            # Skip hidden folders and common system directories
-            if e.is_dir() and not e.name.startswith('.'):
-                if e.name not in {'.git', '.streamlit', '__pycache__'}:
-                    subfolders.append(e.name)
-        return sorted(subfolders)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.write(f"DEBUG: Error listing subfolders: {str(e)}")
+        subfolders = [e.name for e in entries if e.is_dir()]
+        subfolders.sort()
+        return subfolders
+    except Exception:
         return []
+
+def get_user_specific_directory(user_id: str) -> dict:
+    """
+    Creates a directory structure:
+      <cwd>/chromadb_storage_user_{user_id}/
+         chroma_db/
+         images/
+         xml/
+    """
+    base_dir = os.path.join(os.getcwd(), f"chromadb_storage_user_{user_id}")
+    chroma_dir = os.path.join(base_dir, "chroma_db")
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Using base directory: {base_dir}")
+        st.write(f"DEBUG: Chroma subfolder: {chroma_dir}")
+    dirs = {
+        "base": base_dir,
+        "chroma": chroma_dir,
+        "images": os.path.join(base_dir, "images"),
+        "xml": os.path.join(base_dir, "xml")
+    }
+    for dir_path in dirs.values():
+        os.makedirs(dir_path, exist_ok=True)
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Ensured directory exists: {dir_path}")
+    files = glob.glob(os.path.join(chroma_dir, "*"))
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Files in persist directory: {files}")
+    return dirs
 
 # Authentication UI
 if not st.session_state.is_authenticated:
@@ -356,6 +227,26 @@ if not st.session_state.is_authenticated:
         else:
             st.error("Invalid credentials")
     st.stop()
+
+
+def init_user_view_chroma_client(user_id: str):
+    if not user_id:
+        return None
+        
+    dirs = get_user_specific_directory(user_id)
+    try:
+        client = chromadb.PersistentClient(
+            path=dirs["chroma"],
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=True
+            )
+        )
+        return client
+    except Exception as e:
+        st.error(f"Error initializing ChromaDB client: {str(e)}")
+        return None
 
 
 
@@ -420,149 +311,96 @@ class OpenAIEmbeddingFunction:
     def __init__(self, api_key):
         self.api_key = api_key.strip()
         self.client = OpenAI(api_key=self.api_key)
-    
     def __call__(self, input):
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Input type: {type(input)}")
-            st.write(f"DEBUG => Input preview: {str(input)[:100]}")
-        
-        if isinstance(input, str):
-            texts = [input]
-        elif isinstance(input, list):
-            texts = input
-        else:
-            raise ValueError(f"Unsupported input type: {type(input)}")
-        
-        sanitized_texts = []
-        for text in texts:
-            if isinstance(text, (dict, list)):
-                text = str(text)
-            elif not isinstance(text, str):
-                text = str(text)
-            sanitized_texts.append(sanitize_text(text))
-        
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Generating embeddings for {len(sanitized_texts)} texts")
-            st.write(f"DEBUG => First text preview: {sanitized_texts[0][:100] if sanitized_texts else 'None'}")
-        
+        if not isinstance(input, list):
+            input = [input]
         try:
-            if not sanitized_texts or not any(text.strip() for text in sanitized_texts):
-                raise ValueError("No valid text to embed")
-            
             response = self.client.embeddings.create(
-                input=sanitized_texts,
+                input=input,
                 model="text-embedding-3-large"
             )
-            
-            # Extract embeddings from response - fixed this part
-            if isinstance(response, dict):
-                embeddings = [item["embedding"] for item in response["data"]]
-            else:
-                embeddings = [item.embedding for item in response.data]
-            
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Generated {len(embeddings)} embeddings")
-                if embeddings:
-                    st.write(f"DEBUG => Embedding dimension: {len(embeddings[0])}")
-            
-            return embeddings
-            
+            return [item["embedding"] for item in response["data"]]
         except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Error generating embeddings: {str(e)}")
-                st.write(f"DEBUG => Error type: {type(e)}")
-                if hasattr(e, 'response'):
-                    st.write(f"DEBUG => Response: {e.response.text if hasattr(e.response, 'text') else 'No response text'}")
-            raise
-
-    def __hash__(self):
-        return int(hashlib.md5(self.api_key.encode('utf-8')).hexdigest(), 16)
-    
-    def __eq__(self, other):
-        return isinstance(other, OpenAIEmbeddingFunction) and self.api_key == other.api_key
-
-def sanitize_text(text: str) -> str:
-    """Exactly match the sanitization from main app."""
-    text = remove_emoji(text)
-    normalized = unicodedata.normalize('NFKD', text)
-    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
-    return ascii_text
-
-def remove_emoji(text: str) -> str:
-    """Remove emoji exactly as in main app."""
-    emoji_pattern = re.compile(
-        "[" 
-        u"\U0001F600-\U0001F64F"  
-        u"\U0001F300-\U0001F5FF"  
-        u"\U0001F680-\U0001F6FF"  
-        u"\U0001F1E0-\U0001F1FF"  
-        "]+", flags=re.UNICODE)
-    return emoji_pattern.sub(r'', text)
+            st.error(f"Error generating embeddings: {e}")
+            return None
+    @property
+    def embeddings(self):
+        return OpenAIEmbeddings(self.client)
 
 # =======================
 # 2) LLMCountryDetector
 # =======================
 class LLMCountryDetector:
-    SYSTEM_PROMPT = """
-    Extract countries from the text and return their ISO 3166-1 alpha-2 codes.
-    
-    STRICT RULES:
-    1. For 2-letter codes:
-       - ONLY match if they are uppercase and exactly 2 letters (e.g., "CH", "US")
-       - ONLY if they are valid ISO 3166-1 alpha-2 codes
-       - Must be standalone (separated by spaces/punctuation)
-    
-    2. For words ≥4 letters:
-       - If it's a valid country name spelled like "china" or "China" or "CHINA", convert to ISO alpha-2 code
-       - Example: "Switzerland" -> "CH", "SWITZERLAND" -> "CH", "switzerland" -> "CH", "helvetia" -> "CH" etc.
-       - Example: "Germany" -> "DE", "gErMaNy" -> "DE", "germany" -> "DE", "GERMANY" -> "DE" etc.
-       - Ignore the case; yield all correctly written countries and ignore small typos, ex. "swizzerland" -> "CH"
-    
-    Output exact JSON format:
-    [
-        {"detected_phrase": "exact matched text", "code": "XX"}
-    ]
+    """
+    This version ensures that all results — from JSON parsing OR regex fallback — go
+    through the same short-word checks in _deduplicate_and_validate. If the LLM says
+    {"detected_phrase": "the", "code": "CD"}, that gets caught and skipped.
     """
 
+    SYSTEM_PROMPT = """
+        You are a specialized assistant for extracting ALL country references in ANY user text, 
+        but you MUST carefully avoid partial-word triggers. Specifically:
+
+        1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
+           - Extract only 2-letter codes in uppercase form like "CH", "US", "CN", "DE", etc.
+           - Only do so when they appear as separate tokens, never as part of an unrelated word.
+           - If recognized code is alpha2 in pycountry, keep it.
+
+        2. FULL COUNTRY NAMES / ADJECTIVES:
+           - "Switzerland", "Swiss", "United States", "American", "China", "Chinese", etc.
+           - Futher advanced morphologies
+           - If synonyms or known abbreviations (e.g. "USA" -> "US") appear, transform them.
+
+        3. COMMON ABBREVIATIONS:
+           - "PRC" => "CN", "BRD" => "DE", "UK" => "GB", etc.
+           - "helve" => "CH", "helvetia" => "CH", "helvetien" => "CH", "allemania" => "DE", "alemannä" => "DE", and analogoues for other countries and their historic namings
+
+        4. CONTEXTUAL REFERENCES:
+           - "Swiss law" => "CH", "German regulations" => "DE", "Chinese market" => "CN"
+
+        EXTREMELY IMPORTANT:
+        - If a substring is short (e.g., "the", "to") or not uppercase, skip it.
+        - Only keep 2-letter uppercase codes if truly valid alpha2. 
+
+        Output EXACT JSON like:
+        [
+            {"detected_phrase": "DE", "code": "DE"}
+        ]
+        Do not add commentary or extra text.
+    """.strip()
+
     def __init__(self, api_key: str, model: str = "chatgpt-4o-latest"):
+        if "api_key" not in st.session_state or not st.session_state["api_key"]:
+            raise ValueError("No API key in session for LLMCountryDetector.")
         self.client = OpenAI(api_key=api_key)
         self.model = model
-        self.valid_codes = {country.alpha_2 for country in pycountry.countries}
 
-    def detect_countries_in_text(self, text: str) -> List[Dict[str, str]]:
+    def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
+        """One unified function that calls the LLM, tries JSON parse, 
+           then regex parse, then fallback. ALL results get validated."""
         if not text.strip():
             return []
 
-        try:
-            response = self.client.chat_completions_create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": text}
-                ],
-                temperature=0.0
-            )
-            
-            llm_content = response["choices"][0]["message"]["content"].strip()
-            cleaned = re.sub(r'^```json\s*|\s*```$', '', llm_content)
-            
-            try:
-                data = json.loads(cleaned)
-                if isinstance(data, list):
-                    return [{
-                        "detected_phrase": item.get("detected_phrase", "").strip(),
-                        "code": item.get("code", "").strip().upper()
-                    } for item in data if isinstance(item, dict)]
-            except json.JSONDecodeError:
-                if DEBUG_MODE:
-                    st.write(f"DEBUG: Failed to parse LLM response: {llm_content}")
-                pass
+        # 1) Attempt LLM-based detection
+        raw_content = self._call_llm(text)
 
-        except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG: LLM error: {str(e)}")
+        # 2) Try JSON parse
+        raw_results = self._try_json(raw_content)
+        if raw_results:
+            validated = self._deduplicate_and_validate(raw_results)
+            if validated:
+                return validated
+        
+        # 3) Try regex parse
+        regex_pairs = self._extract_via_regex(raw_content)
+        if regex_pairs:
+            validated = self._deduplicate_and_validate(regex_pairs)
+            if validated:
+                return validated
 
-        return []
+        # 4) Fallback
+        fallback_raw = self.naive_pycountry_detection(text)
+        return self._deduplicate_and_validate(fallback_raw)
 
     def _call_llm(self, text: str) -> str:
         """Calls the LLM with our SYSTEM_PROMPT, returns raw content string."""
@@ -683,141 +521,43 @@ class LLMCountryDetector:
 
         return final
 
-def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
-    coll = get_collection("rag_collection")
-    if not coll:
-        st.error("No ChromaDB collection found.")
-        return [], []
-
-    final_passages = []
-    final_metadatas = []
-    used_passages = set()
-    missing_countries = set(iso_codes)
-
-    if not iso_codes:
-        res = coll.query(
-            query_texts=[query_text],
-            n_results=n_results,
-            include=["documents", "metadatas"]
-        )
-        if res and res.get("documents"):
-            final_passages = res["documents"][0]
-            final_metadatas = res["metadatas"][0]
-        return final_passages, final_metadatas
-
-    for code in iso_codes:
-        try:
-            all_docs = coll.get(
-                where={"country_code": code},
-                include=["documents", "metadatas"]
-            )
-            
-            if all_docs and all_docs.get("documents"):
-                missing_countries.discard(code)
-                res = coll.query(
-                    query_texts=[query_text],
-                    where={"country_code": code},
-                    n_results=min(n_results, len(all_docs["documents"])),
-                    include=["documents", "metadatas"]
-                )
-                
-                if res and res.get("documents"):
-                    pass_list = res["documents"][0]
-                    meta_list = res["metadatas"][0]
-                    
-                    for p, m in zip(pass_list, meta_list):
-                        passage_key = f"{code}:{p}"
-                        if passage_key not in used_passages:
-                            final_passages.append(p)
-                            final_metadatas.append(m)
-                            used_passages.add(passage_key)
-            
-        except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Error querying {code}: {str(e)}")
-            continue
-
-    if missing_countries and len(iso_codes) == 1:
-        if DEBUG_MODE:
-            st.write(f"DEBUG => No data found for single country query: {list(missing_countries)[0]}")
-        st.warning(f"No data found for country code: {list(missing_countries)[0]}")
-        return [], []
-
-    return final_passages, final_metadatas
-
 # =======================
 # 4) get_chroma_client
 # =======================
 def get_chroma_client():
-    """Get ChromaDB client with proper path handling."""
     if not st.session_state.get("chroma_folder"):
-        st.warning("No Chroma DB folder is selected. Use the directory browser in the sidebar.")
+        st.warning("No Chroma DB folder is set. Use the directory browser in the sidebar.")
         return None
-        
     if not st.session_state.get("api_key"):
         st.error("Please set your OpenAI API key first.")
         return None
-        
     try:
+        # The user-chosen folder is in st.session_state["chroma_folder"]
         client = chromadb.PersistentClient(
             path=st.session_state["chroma_folder"],
             settings=Settings(
                 anonymized_telemetry=False,
-                allow_reset=True,
-                is_persistent=True
+                allow_reset=True
             )
         )
-        
-        if DEBUG_MODE:
-            st.write(f"DEBUG: ChromaDB client initialized with path: {st.session_state['chroma_folder']}")
-            
         return client
-        
     except Exception as e:
         st.error(f"Error initializing ChromaDB client: {str(e)}")
-        if DEBUG_MODE:
-            st.write(f"DEBUG: Full error: {type(e).__name__}: {str(e)}")
         return None
 
 def get_collection(collection_name="rag_collection"):
-    """Get collection with proper path handling."""
-    if not st.session_state.get("api_key"):
-        st.error("OpenAI API key not set")
+    c = get_chroma_client()
+    if not c:
         return None
-        
     try:
-        dirs = get_user_specific_directory(st.session_state.user_id)
-        
-        # Use simple client initialization
-        client = chromadb.PersistentClient(
-            path=dirs["chroma"],
-            settings=Settings(
-                anonymized_telemetry=False
-            )
-        )
-        
         embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
-        
-        try:
-            collection = client.get_collection(
-                name=collection_name,
-                embedding_function=embedding_function
-            )
-            
-            if DEBUG_MODE:
-                st.write(f"DEBUG => Retrieved collection: {collection_name}")
-                peek = collection.peek()
-                st.write(f"DEBUG => Collection contains {len(peek['ids'])} documents")
-                
-            return collection
-            
-        except Exception as e:
-            if DEBUG_MODE:
-                st.write(f"DEBUG => No existing collection found: {str(e)}")
-            return None
-            
+        coll = c.get_collection(
+            name=collection_name,
+            embedding_function=embedding_function
+        )
+        return coll
     except Exception as e:
-        st.write(f"DEBUG => Error in get_collection: {str(e)}")
+        st.error(f"Error accessing collection: {str(e)}")
         return None
     
 def query_collection(query: str, collection_name: str):
@@ -846,6 +586,7 @@ def query_collection(query: str, collection_name: str):
 
 # =======================
 # 6) generate_answer
+# =======================
 def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
     """
     1) For each ISO code in iso_codes, do a strict filter query where={"country_code": code}.
@@ -860,7 +601,6 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
     final_passages = []
     final_metadatas = []
     used_passages = set()
-    missing_countries = set(iso_codes)  # Track which countries yield no results
 
     if not iso_codes:
         # fallback => broad search if no codes detected
@@ -890,7 +630,6 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
                 st.write(f"DEBUG => Found {len(all_docs.get('documents', []))} documents for {code}")
             
             if all_docs and all_docs.get("documents"):
-                missing_countries.discard(code)  # Found data for this country
                 # Then do similarity search within these documents
                 res = coll.query(
                     query_texts=[query_text],
@@ -926,14 +665,6 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
         for i, (p, m) in enumerate(zip(final_passages, final_metadatas)):
             st.write(f"DEBUG => Passage {i+1} from {m.get('country_code', 'unknown')}")
 
-    # After all queries, check if we have any missing countries
-    if missing_countries and len(iso_codes) == 1:
-        # Special case: Single country query with no data
-        if DEBUG_MODE:
-            st.write(f"DEBUG => No data found for single country query: {list(missing_countries)[0]}")
-        st.warning(f"No data found for country code: {list(missing_countries)[0]}")
-        return [], []  # Return empty lists to trigger CASEB format in query_and_get_answer
-
     return final_passages, final_metadatas
 
 def extract_image_data(text: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
@@ -951,7 +682,6 @@ def extract_image_data(text: str, metadata: Optional[Dict[str, Any]] = None) -> 
     return None
 
 def query_and_get_answer():
-    global DEBUG_MODE
     if not st.session_state.get("api_key"):
         st.error("Please set your OpenAI API key")
         return
@@ -1108,61 +838,40 @@ def list_subfolders(path: str):
 
 # 1) The function itself
 def build_directory_browser():
-    """Enhanced directory browser with proper root path handling."""
-    root_path = get_streamlit_root_path()
-    
-    # Initialize browse path if needed
+    # If the user hasn't loaded a path or set a folder yet, do so now.
     if "browse_path" not in st.session_state:
         st.session_state["browse_path"] = load_selected_directory()
+        # Immediately set chroma_folder to the loaded path
         st.session_state["chroma_folder"] = st.session_state["browse_path"]
-    
+
+    # Create a single container in the sidebar so the UI appears once.
     with st.sidebar.container():
         st.markdown("**Directory Browser**")
-        st.write(f"Root path: `{root_path}`")
         st.write(f"Current: `{st.session_state.browse_path}`")
-        
-        # Show available Chroma DBs
-        chroma_dbs = [d for d in list_subfolders(root_path) 
-                     if d.startswith('chromadb_storage_user_')]
-        
-        if chroma_dbs:
-            st.markdown("### Available Chroma DBs")
-            selected_db = st.selectbox(
-                "Select a Chroma DB",
-                options=["(Select a DB)"] + chroma_dbs,
-                key="chroma_db_select"
-            )
-            
-            if selected_db != "(Select a DB)":
-                db_path = os.path.join(root_path, selected_db, "chroma_db")
-                if st.button("Use Selected DB"):
-                    st.session_state["chroma_folder"] = db_path
-                    save_selected_directory(db_path)
-                    st.sidebar.success(f"Chroma folder set to: {db_path}")
-        
-        # Regular directory navigation
+
         subs = list_subfolders(st.session_state.browse_path)
+
+        # We'll use stable widget keys (no path-based suffix) to avoid duplicates
         choice = st.selectbox(
             "Subfolders",
             options=["(Select a folder)"] + subs,
             key="subfolder_selectbox"
         )
-        
-        cols = st.columns(2)
-        with cols[0]:
-            if subs and choice != "(Select a folder)":
-                if st.button("Go to Subfolder", key="go_subfolder_button"):
-                    new_path = os.path.join(st.session_state.browse_path, choice)
-                    if os.path.isdir(new_path):
-                        st.session_state.browse_path = new_path
-                        st.rerun()
-        
-        with cols[1]:
-            if st.button("Go Up One Level", key="go_up_button"):
-                parent = os.path.dirname(st.session_state.browse_path)
-                if parent and os.path.isdir(parent) and parent.startswith(root_path):
-                    st.session_state.browse_path = parent
-                    st.rerun()
+        if subs and choice != "(Select a folder)":
+            if st.button("Go to Subfolder", key="go_subfolder_button"):
+                st.session_state.browse_path = os.path.join(st.session_state.browse_path, choice)
+                st.session_state["chroma_folder"] = st.session_state.browse_path
+
+        if st.button("Go Up One Level", key="go_up_button"):
+            parent = os.path.dirname(st.session_state.browse_path)
+            if parent and os.path.isdir(parent):
+                st.session_state.browse_path = parent
+                st.session_state["chroma_folder"] = st.session_state.browse_path
+
+        if st.button("Set as Chroma Folder", key="set_chroma_folder_button"):
+            st.session_state["chroma_folder"] = st.session_state.browse_path
+            save_selected_directory(st.session_state.browse_path)
+            st.sidebar.success(f"Chroma folder set to: {st.session_state.browse_path}")
 
 def parse_xml_for_chunks(text: str) -> List[Dict[str, Any]]:
     """Parse XML documents into chunks, properly handling images."""
@@ -1261,74 +970,80 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
     flush_buffer()
     return chunks
 
-
 # =======================
 # 8) MAIN UI (No login)
 # =======================
 def main():
-    st.image("https://brandpulse.ch/wp-content/uploads/2024/02/0_BP_Victorinox_Case-Study-2000x800.png", use_container_width=True)
-    st.title("Knife Legislation Expert")
+    # st.set_page_config(page_title="Simple RAG UI + Dir Browser (No Login)", layout="wide")
 
-    if not st.session_state.is_authenticated:
-        st.warning("Please log in to use the system")
-        return
+    st.sidebar.header("Settings")
 
-    # Ensure API key is set
+    
+    # Initialize session variable for API key if not already set.
     if 'api_key' not in st.session_state:
         st.session_state.api_key = None
 
     with st.sidebar:
         api_key = st.text_input("OpenAI API Key", type="password")
         if api_key:
-            st.session_state.api_key = api_key.strip()
-            
-            # Test embedding function
             try:
-                embedding_function = OpenAIEmbeddingFunction(st.session_state.api_key)
-                test_result = embedding_function(["test"])
-                if DEBUG_MODE:
-                    st.write(f"DEBUG => Embedding test successful. Dimension: {len(test_result[0])}")
-                st.success("API key set and tested successfully!")
+                # Attempt to verify the key using your custom OpenAI class
+                client = OpenAI(api_key=api_key)  # <-- Make sure OpenAI is defined in your code
+                st.session_state.api_key = api_key
+                st.success("API key set successfully!")
             except Exception as e:
-                st.error(f"Error testing API key: {str(e)}")
+                st.error(f"Error initializing OpenAI client: {e}")
 
-    # After login, force Chroma path to user's directory
-    user_dirs = get_user_specific_directory(st.session_state.user_id)
-    st.session_state["chroma_folder"] = user_dirs["chroma"]
 
-    root_path = get_streamlit_root_path()
-    chroma_path = os.path.join(root_path, f"chromadb_storage_user_{st.session_state.user_id}", "chroma_db")
-    st.session_state["chroma_folder"] = chroma_path
-    
-    st.write(f"DEBUG => Set Chroma folder to: {chroma_path}")
-    
-    if DEBUG_MODE:
-        st.write(f"DEBUG => Using Chroma path: {st.session_state['chroma_folder']}")
+    # Directory Browser
+    build_directory_browser()
 
-    # Check Collections button
+    # Check Collections
     if st.sidebar.button("Check Collections"):
-        coll = get_collection("rag_collection")
-        if coll:
+        if not st.session_state.get("chroma_folder", "").strip():
+            st.sidebar.warning("No Chroma DB folder is set. Use the directory browser above.")
+        else:
+            st.write("DEBUG => Checking collections in user-chosen folder...")  # DEBUG ADDED
             try:
-                count = len(coll.peek()["ids"])
-                st.sidebar.success(f"Found collection with {count} documents")
+                client = get_chroma_client()
+                if client:
+                    try:
+                        coll_list = client.list_collections()
+                        if coll_list:
+                            names = [c.name for c in coll_list]
+                            st.sidebar.success(f"Found {len(names)} collection(s): {names}")
+                            
+                            # Optionally verify each collection
+                            if DEBUG_MODE:
+                                for name in names:
+                                    try:
+                                        coll = client.get_collection(name=name)
+                                        count = len(coll.peek()['ids'])
+                                        st.write(f"DEBUG => Collection '{name}' has {count} documents")
+                                    except Exception as e:
+                                        st.write(f"DEBUG => Error checking collection '{name}': {str(e)}")
+                        else:
+                            st.sidebar.info("No collections found")
+                    except Exception as e:
+                        st.sidebar.error(f"Error listing collections: {str(e)}")
+                else:
+                    st.sidebar.warning("ChromaDB client not initialized")
             except Exception as e:
-                st.sidebar.error(f"Error checking collection: {str(e)}")
-        else:
-            st.sidebar.warning("No collection found or error accessing it")
+                st.sidebar.error(f"Error accessing ChromaDB: {str(e)}")
 
-    # Question input and answer generation
+    st.image("https://brandpulse.ch/wp-content/uploads/2024/02/0_BP_Victorinox_Case-Study-2000x800.png", use_container_width=True)
+    st.title("Knife Legislation Expert")
+    # st.write("Enter your API key, pick a folder with your Chroma DB, then ask a question.")
+
+    # --- Input the user's question (bound to session state key "question") ---
     st.text_input(
-        "Your question:", 
-        key="question", 
-        help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ..."
-    )
+    "Your question:", 
+    key="question", 
+    help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ...")
 
+    # --- Primary "Get Answer" Button ---
     if st.button("Get Answer"):
-        if not st.session_state.get("api_key"):
-            st.error("Please set your OpenAI API key first")
-        else:
-            query_and_get_answer()
+        query_and_get_answer()
 
 if __name__ == "__main__":
     main()

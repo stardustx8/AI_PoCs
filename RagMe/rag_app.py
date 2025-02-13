@@ -12,13 +12,9 @@ import os
 # **Disable multi-tenancy for Chroma** (must be set before importing chromadb)
 os.environ["CHROMADB_DISABLE_TENANCY"] = "true"
 
-
-
 PROMPT_FILE = "custom_prompt.txt"
 VOICE_PREF_FILE = "voice_pref.txt"
-DEBUG_MODE = True  # Set to True to enable debug prints
-
-
+DEBUG_MODE = False  # Set to True to enable debug prints
 
 ##############################################################################
 # UNIFIED PROMPT DEFINITIONS
@@ -223,7 +219,6 @@ from chromadb.utils import embedding_functions
 from chromadb.errors import ChromaError
 
 def init_chroma_client():
-    """Initialize ChromaDB client with simplified settings."""
     if "api_key" not in st.session_state:
         return None, None
 
@@ -237,17 +232,12 @@ def init_chroma_client():
         if DEBUG_MODE:
             st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
         
-        # Simplified client initialization
         client = chromadb.PersistentClient(
             path=dirs["chroma"],
             settings=Settings(
                 anonymized_telemetry=False
             )
         )
-        
-        if DEBUG_MODE:
-            st.write(f"DEBUG => ChromaDB client initialized with path: {dirs['chroma']}")
-            st.write(f"DEBUG => Available collections: {[c.name for c in client.list_collections()]}")
         
         return client, embedding_function
         
@@ -336,38 +326,64 @@ class OpenAIEmbeddingFunction:
 
 import re
 from typing import Optional, Dict, Set
+import pycountry
 import streamlit as st  # optional if you want to log warnings
 
 import openai
 
 class LLMCountryDetector:
     SYSTEM_PROMPT = """
-    Extract countries from the text and return their ISO 3166-1 alpha-2 codes.
-    
-    STRICT RULES:
-    1. For 2-letter codes:
-       - ONLY match if they are uppercase and exactly 2 letters (e.g., "CH", "US")
-       - ONLY if they are valid ISO 3166-1 alpha-2 codes
-       - Must be standalone (separated by spaces/punctuation)
-    
-    2. For words ≥4 letters:
-       - If it's a valid country name spelled like "china" or "China" or "CHINA", convert to ISO alpha-2 code
-       - Example: "Switzerland" -> "CH", "SWITZERLAND" -> "CH", "switzerland" -> "CH", "helvetia" -> "CH" etc.
-       - Example: "Germany" -> "DE", "gErMaNy" -> "DE", "germany" -> "DE", "GERMANY" -> "DE" etc.
-       - Ignore the case; yield all correctly written countries and ignore small typos, ex. "swizzerland" -> "CH"
-    
-    Output exact JSON format:
-    [
-        {"detected_phrase": "exact matched text", "code": "XX"}
-    ]
-    """
+        You are a specialized assistant for extracting ALL country references in ANY user text. 
+        You must detect and extract EVERY single country reference, including:
 
-    def __init__(self, api_key: str, model: str = "chatgpt-4o-latest"):
+        1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
+           - Extract all 2-letter codes like "CH", "US", "CN", "DE", etc.
+           - These MUST be extracted even when standalone
+           - Never skip any 2-letter country code
+           - Example: "DE vs CH" MUST return both codes
+
+        2. FULL NAMES:
+           - "Switzerland", "United States", "China", "Germany", etc.
+           - "Swiss", "American", "Chinese", "German" (adjective form)
+           
+        3. COMMON ABBREVIATIONS:
+           - "USA" => "US"
+           - "PRC" => "CN"
+           - "BRD" => "DE"
+           
+        4. CONTEXTUAL REFERENCES:
+           - "Swiss law" => "CH"
+           - "German regulations" => "DE"
+           - "Chinese market" => "CN"
+
+        EXTREMELY IMPORTANT:
+        - You MUST catch ALL country codes (DE, CH, US, etc.)
+        - Never skip any valid 2-letter code
+        - If in doubt, include it
+        - Process the ENTIRE text, not just the beginning
+
+        Output format must be EXACT JSON:
+        [
+            {"detected_phrase": "exact text found", "code": "XX"}
+        ]
+
+        Examples of MANDATORY detection:
+        Input: "DE vs CH vs CN"
+        Output: [
+            {"detected_phrase": "DE", "code": "DE"},
+            {"detected_phrase": "CH", "code": "CH"},
+            {"detected_phrase": "CN", "code": "CN"}
+        ]
+
+        Output ONLY valid JSON. No extra text.
+    """.strip()
+
+    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
-        self.valid_codes = {country.alpha_2 for country in pycountry.countries}
 
-    def detect_countries_in_text(self, text: str) -> List[Dict[str, str]]:
+    def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
+        """Enhanced country detection with better validation."""
         if not text.strip():
             return []
 
@@ -381,64 +397,121 @@ class LLMCountryDetector:
                 temperature=0.0
             )
             
-            llm_content = response.choices[0].message.content.strip()
-            # Remove ```json and ``` if present
-            cleaned = re.sub(r'^```json\s*|\s*```$', '', llm_content)
+            raw_content = response.choices[0].message.content.strip()
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => LLM raw response: {raw_content}")
+
+            # Clean up response
+            cleaned_content = re.sub(r'^```json\s*|\s*```$', '', raw_content)
             
             try:
-                data = json.loads(cleaned)
-                if isinstance(data, list):
-                    return [{
-                        "detected_phrase": item.get("detected_phrase", "").strip(),
-                        "code": item.get("code", "").strip().upper()
-                    } for item in data if isinstance(item, dict)]
-            except json.JSONDecodeError:
+                data = json.loads(cleaned_content)
+                if not isinstance(data, list):
+                    if DEBUG_MODE:
+                        st.write("DEBUG => JSON response was not a list")
+                    data = []
+                
+                # Validate and deduplicate by code
+                used_codes = set()
+                results = []
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    phrase = item.get("detected_phrase", "").strip()
+                    code = item.get("code", "")
+                    if len(code) == 2 and code.isupper() and phrase:
+                        if code not in used_codes:
+                            results.append({"detected_phrase": phrase, "code": code})
+                            used_codes.add(code)
+                
                 if DEBUG_MODE:
-                    st.write(f"DEBUG: Failed to parse LLM response: {llm_content}")
-                pass
+                    st.write(f"DEBUG => Detected countries: {results}")
 
+                # If no results, try fallback
+                if not results:
+                    fallback_codes = self.naive_pycountry_detection(text)
+                    if fallback_codes and DEBUG_MODE:
+                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                    results = fallback_codes
+
+                return results
+
+            except json.JSONDecodeError as e:
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => JSON parse error: {str(e)}")
+                # Try regex fallback
+                matches = re.finditer(
+                    r'{"detected_phrase":\s*"([^"]+)",\s*"code":\s*"([A-Z]{2})"}',
+                    cleaned_content
+                )
+                results = []
+                used_codes = set()
+                for match in matches:
+                    phrase, code = match.groups()
+                    if code not in used_codes:
+                        results.append({"detected_phrase": phrase, "code": code})
+                        used_codes.add(code)
+                
+                if results and DEBUG_MODE:
+                    st.write(f"DEBUG => Recovered {len(results)} results from regex")
+                
+                # If still empty, do fallback
+                if not results:
+                    fallback_codes = self.naive_pycountry_detection(text)
+                    if fallback_codes and DEBUG_MODE:
+                        st.write(f"DEBUG => Fallback detection => {fallback_codes}")
+                    results = fallback_codes
+
+                return results
+                
         except Exception as e:
             if DEBUG_MODE:
-                st.write(f"DEBUG: LLM error: {str(e)}")
+                st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
+            return self.naive_pycountry_detection(text)
 
-        return []
+    @staticmethod
+    def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
+        """
+        Enhanced fallback detection that prioritizes finding ALL country codes.
+        """
+        found_codes = []
+        used_codes = set()
 
+        # First pass: Look specifically for 2-letter codes
+        words = re.findall(r'\b[A-Za-z]{2}\b', text)
+        for w in words:
+            w_up = w.upper()
+            country = pycountry.countries.get(alpha_2=w_up)
+            if country:
+                if w_up not in used_codes:
+                    found_codes.append({"detected_phrase": w, "code": w_up})
+                    used_codes.add(w_up)
 
+        # Second pass: Look for country names
+        words = re.findall(r'\b[A-Za-z]+\b', text)
+        for w in words:
+            w_up = w.upper()
+            # Skip if it's already a known code
+            if w_up in used_codes:
+                continue
+            try:
+                # Try to find matching country
+                for c in pycountry.countries:
+                    if w_up in c.name.upper():
+                        iso2 = c.alpha_2
+                        if iso2 not in used_codes:
+                            found_codes.append({"detected_phrase": w, "code": iso2})
+                            used_codes.add(iso2)
+                        break
+            except:
+                pass
 
+        return found_codes
 
-def verify_chroma_persistence(user_id: str):
-    """Debug ChromaDB persistence on Streamlit Cloud"""
-    dirs = get_user_specific_directory(user_id)
-    chroma_path = dirs["chroma"]
-    
-    # Check directory contents
-    st.write("DEBUG => Checking Chroma directory:")
-    st.write(f"Path: {chroma_path}")
-    
-    if not os.path.exists(chroma_path):
-        st.write("ERROR: Directory does not exist!")
-        return
-        
-    # List all files
-    files = []
-    for root, dirs, filenames in os.walk(chroma_path):
-        for f in filenames:
-            full_path = os.path.join(root, f)
-            size = os.path.getsize(full_path)
-            files.append(f"{full_path} ({size} bytes)")
-    
-    st.write("Files found:")
-    for f in files:
-        st.write(f)
-        
-    # Check permissions
-    st.write("\nPermissions:")
-    try:
-        st.write(f"Read: {os.access(chroma_path, os.R_OK)}")
-        st.write(f"Write: {os.access(chroma_path, os.W_OK)}")
-        st.write(f"Execute: {os.access(chroma_path, os.X_OK)}")
-    except Exception as e:
-        st.write(f"Error checking permissions: {e}")
+    def detect_first_country_in_text(self, text: str):
+        all_codes = self.detect_countries_in_text(text)
+        return all_codes[0] if all_codes else None
 
 
 ##############################################################################
@@ -1079,37 +1152,6 @@ def detect_country_in_text_fallback(text: str) -> str:
     # ... more guesses if needed ...
     return "UNKNOWN"
 
-def get_chroma_client():
-    """Get ChromaDB client with proper path handling."""
-    if not st.session_state.get("chroma_folder"):
-        st.warning("No Chroma DB folder is selected. Use the directory browser in the sidebar.")
-        return None
-        
-    if not st.session_state.get("api_key"):
-        st.error("Please set your OpenAI API key first.")
-        return None
-        
-    try:
-        client = chromadb.PersistentClient(
-            path=st.session_state["chroma_folder"],
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-                is_persistent=True
-            )
-        )
-        
-        if DEBUG_MODE:
-            st.write(f"DEBUG: ChromaDB client initialized with path: {st.session_state['chroma_folder']}")
-            
-        return client
-        
-    except Exception as e:
-        st.error(f"Error initializing ChromaDB client: {str(e)}")
-        if DEBUG_MODE:
-            st.write(f"DEBUG: Full error: {type(e).__name__}: {str(e)}")
-        return None
-    
 def get_collection_dimension(collection_name: str) -> Optional[int]:
     """Get the dimension of existing embeddings in a collection."""
     try:
@@ -1845,37 +1887,60 @@ ${ data.answer || "No answer available." }
 # 6) CREATE/LOAD COLLECTION, ETC.
 ##############################################################################
 def create_or_load_collection(collection_name: str, force_recreate: bool = False):
-    """Create or load a collection with simpler handling."""
+    """Create or load a collection with proper embedding function."""
     global chroma_client, embedding_function_instance
     
     if embedding_function_instance is None:
         st.error("Embedding function not initialized. Please set your OpenAI API key.")
-        return None
+        st.stop()
     
-    try:
-        # Simple try to get existing collection first
+    if DEBUG_MODE:
+        st.write(f"DEBUG: In create_or_load_collection, embedding_function_instance hash: {hash(embedding_function_instance)}")
+    
+    if force_recreate:
         try:
-            collection = chroma_client.get_collection(
+            chroma_client.delete_collection(name=collection_name)
+            if DEBUG_MODE:
+                st.write(f"DEBUG: Deleted existing collection '{collection_name}' due to force_recreate flag.")
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG: Could not delete existing collection '{collection_name}': {e}")
+    
+    # List current collections
+    current_collections = [c.name for c in chroma_client.list_collections()]
+    
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Current collections: {current_collections}")
+        
+    try:
+        if collection_name in current_collections:
+            # Important: Explicitly set the embedding function when getting existing collection
+            coll = chroma_client.get_collection(
                 name=collection_name,
                 embedding_function=embedding_function_instance
             )
             if DEBUG_MODE:
-                st.write(f"DEBUG => Retrieved existing collection: {collection_name}")
-            return collection
-        except:
-            # If not found, create new
-            collection = chroma_client.create_collection(
+                st.write(f"DEBUG: Retrieved existing collection '{collection_name}' with embedding function")
+        else:
+            # Create new collection with embedding function
+            coll = chroma_client.create_collection(
                 name=collection_name,
                 embedding_function=embedding_function_instance
             )
             if DEBUG_MODE:
-                st.write(f"DEBUG => Created new collection: {collection_name}")
-            return collection
-            
+                st.write(f"DEBUG: Created new collection '{collection_name}' with embedding function")
+        
+        # Verify the collection exists and has the embedding function
+        if DEBUG_MODE:
+            st.write(f"DEBUG: Collection '{collection_name}' exists: {coll is not None}")
+            st.write(f"DEBUG: Collection embedding function hash: {hash(coll._embedding_function) if hasattr(coll, '_embedding_function') else 'None'}")
+        
+        return coll
+        
     except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG => Error in create_or_load_collection: {str(e)}")
-        return None
+            st.write(f"DEBUG: Error in create_or_load_collection: {str(e)}")
+        raise
 
 
 
@@ -1981,56 +2046,174 @@ def extract_image_data(text: str) -> Optional[Dict[str, str]]:
     return None
 
 def query_collection(query: str, collection_name: str, n_results: int = 10):
-    """Query collection with country code filtering."""
-    coll = create_or_load_collection(collection_name)
-    if not coll:
-        return [], []
+    """Enhanced query function with consistent multi-country retrieval."""
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Processing query: '{query}'")
 
-    # Detect countries
+    # 1) Create or load Chroma collection
+    force_flag = st.session_state.get("force_recreate", False)
+    coll = create_or_load_collection(collection_name, force_recreate=force_flag)
+    
+    try:
+        # Test collection has data
+        test_results = coll.peek()
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Collection peek results: {test_results}")
+    except Exception as e:
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error peeking collection: {str(e)}")
+    
+    # 2) Detect countries
     llm_detector = LLMCountryDetector(api_key=st.session_state["api_key"])
     detected_list = llm_detector.detect_countries_in_text(query)
 
-    # Display detected countries
+    # 3) Logging & user display
     if detected_list:
+        country_list = [f"'{item['detected_phrase']}' → {item['code']}" for item in detected_list]
         st.write("🌍 **Countries Detected in Query:**")
-        for item in detected_list:
-            st.write(f"  • '{item['detected_phrase']}' → {item['code']}")
+        for country in country_list:
+            st.write(f"  • {country}")
     else:
         st.write("❌ No country codes detected in query")
 
+    # Get all documents to check available countries
     try:
-        iso_codes = [d["code"] for d in detected_list]
-        
-        if iso_codes:
-            # Query with country filter
-            results = coll.query(
-                query_texts=[query],
-                where={"country_code": {"$in": iso_codes}},
-                n_results=n_results,
-                include=["documents", "metadatas"]
-            )
-        else:
-            # No country codes - standard search
-            results = coll.query(
-                query_texts=[query],
-                n_results=n_results,
-                include=["documents", "metadatas"]
-            )
-
-        passages = results.get("documents", [[]])[0] if results.get("documents") else []
-        metadata = results.get("metadatas", [[]])[0] if results.get("metadatas") else []
-
-        update_stage('retrieve', {
-            "passages": passages,
-            "metadata": metadata
-        })
-
-        return passages, metadata
-
+        all_docs = coll.get()
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Retrieved {len(all_docs.get('ids', []))} documents")
+            if 'metadatas' in all_docs:
+                st.write(f"DEBUG => Sample metadata: {all_docs['metadatas'][0] if all_docs['metadatas'] else 'None'}")
     except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG => Query error: {str(e)}")
+            st.write(f"DEBUG => Error getting documents: {str(e)}")
+        all_docs = {'ids': [], 'metadatas': []}
+
+    available_countries = set()
+    for metadata in all_docs.get("metadatas", []):
+        if metadata and "country_code" in metadata:
+            available_countries.add(metadata["country_code"])
+    
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Available countries in database: {available_countries}")
+        st.write(f"DEBUG => Total documents: {len(all_docs.get('ids', []))}")
+
+    if len(all_docs.get('ids', [])) == 0:
+        st.warning("No documents found in collection. Please upload first.")
         return [], []
+
+    # 4) Initialize results
+    combined_passages = []
+    combined_metadata = []
+    seen_passages = set()
+    iso_codes = [d["code"] for d in detected_list]
+
+    # 5) Query for each country with retries
+    if iso_codes:
+        for code in iso_codes:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Querying for country {code}")
+
+            # Generate query embedding using same model as collection
+            query_embedding_data = embed_text(
+                [query], 
+                collection_name=collection_name,  # Pass collection name to ensure model consistency
+                update_stage_flag=False,
+                return_data=True
+            )
+            query_embedding = query_embedding_data["embeddings"][0]
+
+            # Try different query approaches
+            for attempt in range(3):
+                if attempt == 0:
+                    try:
+                        results = coll.query(
+                            query_embeddings=[query_embedding],  # Use pre-generated embedding
+                            where={"country_code": code},
+                            n_results=n_results
+                        )
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => Query attempt {attempt} failed: {str(e)}")
+                        continue
+
+                elif attempt == 1:
+                    country_query = f"information about {code} regulations"
+                    query_embedding_data = embed_text(
+                        [country_query],
+                        collection_name=collection_name,
+                        update_stage_flag=False,
+                        return_data=True
+                    )
+                    try:
+                        results = coll.query(
+                            query_embeddings=[query_embedding_data["embeddings"][0]],
+                            where={"country_code": code},
+                            n_results=n_results
+                        )
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => Query attempt {attempt} failed: {str(e)}")
+                        continue
+
+                else:
+                    try:
+                        results = coll.get(
+                            where={"country_code": code}
+                        )
+                    except Exception as e:
+                        if DEBUG_MODE:
+                            st.write(f"DEBUG => Query attempt {attempt} failed: {str(e)}")
+                        continue
+
+                curr_passages = results.get("documents", [[]])[0] if attempt < 2 else results.get("documents", [])
+                curr_metadata = results.get("metadatas", [[]])[0] if attempt < 2 else results.get("metadatas", [])
+
+                if curr_passages:
+                    if DEBUG_MODE:
+                        st.write(f"DEBUG => Found {len(curr_passages)} passages for {code} on attempt {attempt + 1}")
+                    break
+                elif DEBUG_MODE:
+                    st.write(f"DEBUG => No results for {code} on attempt {attempt + 1}")
+
+            # Process results
+            if curr_passages:
+                for p, m in zip(curr_passages, curr_metadata):
+                    passage_key = f"{code}:{p}"
+                    if passage_key not in seen_passages:
+                        combined_passages.append(p)
+                        combined_metadata.append(m)
+                        seen_passages.add(passage_key)
+            elif DEBUG_MODE:
+                st.write(f"DEBUG => No results found for {code} after all attempts")
+
+    else:
+        # Standard search if no countries detected
+        if DEBUG_MODE:
+            st.write("DEBUG => Doing standard search with no country filter")
+        
+        # Generate query embedding
+        query_embedding_data = embed_text(
+            [query],
+            collection_name=collection_name,
+            update_stage_flag=False,
+            return_data=True
+        )
+        query_embedding = query_embedding_data["embeddings"][0]
+        
+        results = coll.query(
+            query_embeddings=[query_embedding],
+            n_results=n_results
+        )
+        combined_passages = results.get("documents", [[]])[0]
+        combined_metadata = results.get("metadatas", [[]])[0]
+
+    # Update pipeline stage
+    update_stage('retrieve', {
+        "passages": combined_passages,
+        "metadata": combined_metadata
+    })
+
+    return combined_passages, combined_metadata
 
 ##############################################################################
 # 7) GPT ANSWER GENERATION
@@ -2111,19 +2294,18 @@ def generate_answer_with_gpt(query: str, passages: List[str], metadata: List[dic
     balanced_instruction = f"""
     {base_instruction}
 
-    STRICT RULES:
-    1. ONLY use information from the provided passages - never use external knowledge
-    2. If passages don't contain information for {', '.join(detected_codes)}, say "No relevant information found in documents for [COUNTRY]"
-    3. If passages exist but don't mention knife laws, say "Documents for [COUNTRY] exist but don't contain knife legislation information"
-    4. Only include facts explicitly stated in passages
-    5. Quote relevant text directly when possible
+    INSTRUCTIONS:
+    1. The user's query mentions these countries: {', '.join(detected_codes)}
+    2. Focus on finding relevant information for these countries.
+    3. Look for both direct and indirect mentions of regulations or requirements.
+    4. If information seems relevant but not explicit, clearly mark it as "Based on available data:".
+    5. For each country, try to provide:
+       - Direct quotes or references if available
+       - Related context that might help understand the regulations
+       - Any caveats or important notes
+    6. Only state "No information in my documents" if you truly find nothing relevant.
 
-    Available document types in passages:
-    - text: Regular text content 
-    - table: Tabular data
-    - image: Images with extracted text
-
-    For each mentioned country, verify if matching passages exist before providing any information.
+    Remember: Analyze the provided documents thoroughly before concluding no information exists.
     """
     messages.append({"role": "system", "content": balanced_instruction})
 
@@ -2204,7 +2386,7 @@ For each country mentioned ({', '.join(detected_codes)}):
     try:
         # Use higher temperature for initial response
         completion = new_client.chat.completions.create(
-            model="chatgpt-4o-latest",
+            model="gpt-4o",
             messages=messages,
             max_tokens=4096,
             temperature=0.3  # Increased temperature for better information correlation
@@ -2227,7 +2409,7 @@ For each country mentioned ({', '.join(detected_codes)}):
             """
             messages.append({"role": "user", "content": strict_prompt})
             completion = new_client.chat.completions.create(
-                model="chatgpt-4o-latest",
+                model="gpt-4o",
                 messages=messages,
                 max_tokens=4096,
                 temperature=0.2  # Slightly lower for correction but still flexible
@@ -2426,82 +2608,43 @@ def create_user_session():
 
 import glob  # add this import if not already present
 
-def get_streamlit_root_path() -> str:
-    """Get the root path for Streamlit Cloud or local development."""
-    if os.path.exists('/mount/src'):
-        # We're on Streamlit Cloud
-        return '/mount/src/ai_pocs'
-    else:
-        # Local development
-        return os.getcwd()
-    
 def get_user_specific_directory(user_id: str) -> dict:
     """
-    Creates a directory structure:
-      <root>/chromadb_storage_user_{user_id}/
-         chroma_db/
-         images/
-         xml/
+    Creates a directory layout like:
+      <current_working_dir>/
+        chromadb_storage_user_{user_id}/
+          chroma_db/
+          images/
+          xml/
     """
-    root_path = get_streamlit_root_path()
-    base_dir = os.path.join(root_path, f"chromadb_storage_user_{user_id}")
+    base_dir = os.path.join(os.getcwd(), f"chromadb_storage_user_{user_id}")
+    
+    # Subfolder dedicated to the actual Chroma DB
     chroma_dir = os.path.join(base_dir, "chroma_db")
     
     if DEBUG_MODE:
-        st.write(f"DEBUG: Root path: {root_path}")
         st.write(f"DEBUG: Using base directory: {base_dir}")
         st.write(f"DEBUG: Chroma subfolder: {chroma_dir}")
     
     dirs = {
         "base": base_dir,
-        "chroma": chroma_dir,
+        "chroma": chroma_dir,  # <--- Use the subfolder for Chroma
         "images": os.path.join(base_dir, "images"),
         "xml": os.path.join(base_dir, "xml")
     }
     
-    # Create directories if they don't exist
     for dir_path in dirs.values():
         os.makedirs(dir_path, exist_ok=True)
         if DEBUG_MODE:
             st.write(f"DEBUG: Ensured directory exists: {dir_path}")
     
+    # List all files in the 'chroma' directory
+    import glob
+    files = glob.glob(os.path.join(chroma_dir, "*"))
+    if DEBUG_MODE:
+        st.write(f"DEBUG: Files in persist directory: {files}")
+    
     return dirs
-
-def load_selected_directory() -> str:
-    """Load the previously selected directory or return the root path."""
-    root_path = get_streamlit_root_path()
-    file_path = os.path.join(root_path, "selected_directory.txt")
-    
-    if os.path.exists(file_path):
-        with open(file_path, "r") as f:
-            dir_selected = f.read().strip()
-            if os.path.isdir(dir_selected):
-                return dir_selected
-    return root_path
-
-def save_selected_directory(directory: str):
-    """Save the selected directory path."""
-    root_path = get_streamlit_root_path()
-    file_path = os.path.join(root_path, "selected_directory.txt")
-    
-    with open(file_path, "w") as f:
-        f.write(directory)
-
-def list_subfolders(path: str) -> List[str]:
-    """List all visible subfolders in the given path."""
-    try:
-        entries = os.scandir(path)
-        subfolders = []
-        for e in entries:
-            # Skip hidden folders and common system directories
-            if e.is_dir() and not e.name.startswith('.'):
-                if e.name not in {'.git', '.streamlit', '__pycache__'}:
-                    subfolders.append(e.name)
-        return sorted(subfolders)
-    except Exception as e:
-        if DEBUG_MODE:
-            st.write(f"DEBUG: Error listing subfolders: {str(e)}")
-        return []
 
 def load_users():
     user_file = Path("users.json")
@@ -2586,6 +2729,7 @@ def delete_country_data(iso_code: str, user_id: str) -> tuple[bool, str]:
             if results and results.get('ids'):
                 # Delete the documents
                 collection.delete(ids=results['ids'])
+                temp_client.persist()
                 return True, f"Successfully deleted {len(results['ids'])} documents and associated images for country {iso_code}"
             else:
                 return True, f"No documents found for country {iso_code}"
@@ -2640,62 +2784,6 @@ def delete_user(user_id: str):
 
     return True, f"User '{user_id}' deleted successfully."
 
-def build_directory_browser():
-    """Enhanced directory browser with proper root path handling."""
-    root_path = get_streamlit_root_path()
-    
-    # Initialize browse path if needed
-    if "browse_path" not in st.session_state:
-        st.session_state["browse_path"] = load_selected_directory()
-        st.session_state["chroma_folder"] = st.session_state["browse_path"]
-    
-    with st.sidebar.container():
-        st.markdown("**Directory Browser**")
-        st.write(f"Root path: `{root_path}`")
-        st.write(f"Current: `{st.session_state.browse_path}`")
-        
-        # Show available Chroma DBs
-        chroma_dbs = [d for d in list_subfolders(root_path) 
-                     if d.startswith('chromadb_storage_user_')]
-        
-        if chroma_dbs:
-            st.markdown("### Available Chroma DBs")
-            selected_db = st.selectbox(
-                "Select a Chroma DB",
-                options=["(Select a DB)"] + chroma_dbs,
-                key="chroma_db_select"
-            )
-            
-            if selected_db != "(Select a DB)":
-                db_path = os.path.join(root_path, selected_db, "chroma_db")
-                if st.button("Use Selected DB"):
-                    st.session_state["chroma_folder"] = db_path
-                    save_selected_directory(db_path)
-                    st.sidebar.success(f"Chroma folder set to: {db_path}")
-        
-        # Regular directory navigation
-        subs = list_subfolders(st.session_state.browse_path)
-        choice = st.selectbox(
-            "Subfolders",
-            options=["(Select a folder)"] + subs,
-            key="subfolder_selectbox"
-        )
-        
-        cols = st.columns(2)
-        with cols[0]:
-            if subs and choice != "(Select a folder)":
-                if st.button("Go to Subfolder", key="go_subfolder_button"):
-                    new_path = os.path.join(st.session_state.browse_path, choice)
-                    if os.path.isdir(new_path):
-                        st.session_state.browse_path = new_path
-                        st.rerun()
-        
-        with cols[1]:
-            if st.button("Go Up One Level", key="go_up_button"):
-                parent = os.path.dirname(st.session_state.browse_path)
-                if parent and os.path.isdir(parent) and parent.startswith(root_path):
-                    st.session_state.browse_path = parent
-                    st.rerun()
 
 ##############################################################################
 # TEXT PROCESSING & CHUNKING FUNCTIONS
@@ -3140,11 +3228,6 @@ def main():
 
         else:
             st.success(f"Logged in as {st.session_state.user_id}")
-
-            user_dirs = get_user_specific_directory(st.session_state.user_id)
-            st.markdown("#### Your Chroma Storage Path")
-            st.code(user_dirs["chroma"])
-            
             if st.button("Logout"):
                 # Clear user auth
                 st.session_state.user_id = None
