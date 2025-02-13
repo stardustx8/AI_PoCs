@@ -3260,7 +3260,7 @@ def main():
         [data-testid="column"] { width: calc(100% + 2rem); margin-left: -1rem; }
         </style>
     """, unsafe_allow_html=True)
-    st.title("RAG + Advanced Voice Mode (AVM) Cockpit")
+    st.title("RagMe")
     
     # Sidebar: API key and force recreate option
     # global chroma_client, embedding_function_instance
@@ -3272,62 +3272,62 @@ def main():
             st.error("ChromaDB client not initialized properly")
             st.stop()
     
-    # "Delete All Collections" button in sidebar
-    if st.sidebar.button("Delete All Collections"):
-        if not st.session_state.get("user_id"):
-            st.sidebar.error("Please log in first")
-        else:
-            success, message = delete_user_collections(st.session_state.user_id)
-            if success:
-                # Reset the ChromaDB client to force reconnection
-                chroma_client, embedding_function_instance = init_chroma_client()
+#    # "Delete All Collections" button in sidebar
+#    if st.sidebar.button("Delete All Collections"):
+#        if not st.session_state.get("user_id"):
+#            st.sidebar.error("Please log in first")
+#        else:
+#            success, message = delete_user_collections(st.session_state.user_id)
+#            if success:
+#                # Reset the ChromaDB client to force reconnection
+#                chroma_client, embedding_function_instance = init_chroma_client()
+#                
+#                # Clear relevant session state
+#                for stage in ['store', 'query', 'retrieve', 'generate']:
+#                    if f'{stage}_data' in st.session_state:
+#                        st.session_state[f'{stage}_data'] = None
+#                
+#                st.sidebar.success(message)
+#            else:
+#                st.sidebar.error(message)
                 
-                # Clear relevant session state
-                for stage in ['store', 'query', 'retrieve', 'generate']:
-                    if f'{stage}_data' in st.session_state:
-                        st.session_state[f'{stage}_data'] = None
-                
-                st.sidebar.success(message)
-            else:
-                st.sidebar.error(message)
-                
-    st.sidebar.markdown("### AVM Controls")
-    
-    def toggle_avm():
-        st.session_state.avm_button_key += 1  # Force button refresh
-        if st.session_state.avm_active:
-            st.session_state.voice_html = None
-            st.session_state.avm_active = False
-            st.session_state.avm_button_key += 1
-            return
-        token_data = get_ephemeral_token("rag_collection")
-        if token_data:
-            st.session_state.voice_html = get_realtime_html(token_data)
-            st.session_state.avm_active = True
-            st.session_state.avm_button_key += 1
-        else:
-            st.sidebar.error("Could not start AVM.\n\nCheck error messages at the top of the main section ---------------------------->>>")
-
-    if st.sidebar.button(
-        "End AVM" if st.session_state.avm_active else "Start AVM",
-        key=f"avm_toggle_{st.session_state.avm_button_key}",
-        on_click=toggle_avm
-    ):
-        pass
-
-    if st.session_state.avm_active:
-        st.sidebar.success("AVM started.")
-    else:
-        if st.session_state.avm_button_key > 0:
-            st.sidebar.success("AVM ended.")
-    
-    # **Display the exact AVM initialization text in the sidebar**
-    if st.session_state.avm_active and st.session_state.get("avm_initial_text"):
-        st.sidebar.markdown("### AVM Initial Instructions")
-        st.sidebar.code(st.session_state.avm_initial_text)
-    
-    if st.session_state.avm_active and st.session_state.voice_html:
-        components.html(st.session_state.voice_html, height=1, scrolling=True)
+#    st.sidebar.markdown("### AVM Controls")
+#    
+#    def toggle_avm():
+#        st.session_state.avm_button_key += 1  # Force button refresh
+#        if st.session_state.avm_active:
+#            st.session_state.voice_html = None
+#            st.session_state.avm_active = False
+#            st.session_state.avm_button_key += 1
+#            return
+#        token_data = get_ephemeral_token("rag_collection")
+#        if token_data:
+#            st.session_state.voice_html = get_realtime_html(token_data)
+#            st.session_state.avm_active = True
+#            st.session_state.avm_button_key += 1
+#        else:
+#            st.sidebar.error("Could not start AVM.\n\nCheck error messages at the top of the main section ---------------------------->>>")
+#
+#    if st.sidebar.button(
+#        "End AVM" if st.session_state.avm_active else "Start AVM",
+#        key=f"avm_toggle_{st.session_state.avm_button_key}",
+#        on_click=toggle_avm
+#    ):
+#        pass
+#
+#    if st.session_state.avm_active:
+#        st.sidebar.success("AVM started.")
+#    else:
+#        if st.session_state.avm_button_key > 0:
+#            st.sidebar.success("AVM ended.")
+#    
+#    # **Display the exact AVM initialization text in the sidebar**
+#    if st.session_state.avm_active and st.session_state.get("avm_initial_text"):
+#        st.sidebar.markdown("### AVM Initial Instructions")
+#        st.sidebar.code(st.session_state.avm_initial_text)
+#    
+#    if st.session_state.avm_active and st.session_state.voice_html:
+#        components.html(st.session_state.voice_html, height=1, scrolling=True)
     
 
     with st.sidebar:
@@ -3386,29 +3386,29 @@ def main():
         st.session_state["upload_data"] = {"content": "", "preview": "", "size": 0}
 
     # Main layout: Use three columns (col1, spacer, col2) for extra spacing
-    col1, spacer, col2 = st.columns([1.3, 0.3, 2])
+    col1, spacer, col2 = st.columns([3.3, 0.3, 1])
     
     with col1:
-        st.header("Step-by-Step Pipeline Control")
+        # st.header("Step-by-Step Pipeline Control")
         
         # --- Step 0: Specify Initial Instructions & Voice ---
-        st.subheader("Step 0: Specify Initial Instructions & Voice")
-
-        VOICE_OPTIONS = ["alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"]
-
-        # Load the current voice preference for the logged-in user, defaulting to "coral"
-        current_voice = load_voice_pref(st.session_state.user_id) if st.session_state.get("user_id") else "coral"
-
-        selected_voice = st.selectbox(
-            "-> Choose a voice for advanced voice mode:",
-            options=VOICE_OPTIONS,
-            index=VOICE_OPTIONS.index(current_voice) if current_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
-        )
-
-        # If the selection has changed, update session state and persist the new voice
-        if selected_voice != current_voice:
-            st.session_state.selected_voice = selected_voice
-            save_voice_pref(selected_voice, st.session_state.user_id)
+        #st.subheader("Step 0: Specify Initial Instructions")
+        st.subheader("Custom Prompt")
+    #    VOICE_OPTIONS = ["alloy", "echo", "shimmer", "ash", "ballad", "coral", "sage", "verse"]
+#
+    #    # Load the current voice preference for the logged-in user, defaulting to "coral"
+    #    current_voice = load_voice_pref(st.session_state.user_id) if st.session_state.get("user_id") else "coral"
+#
+    #    selected_voice = st.selectbox(
+    #        "-> Choose a voice for advanced voice mode:",
+    #        options=VOICE_OPTIONS,
+    #        index=VOICE_OPTIONS.index(current_voice) if current_voice in VOICE_OPTIONS else VOICE_OPTIONS.index("coral")
+    #    )
+#
+    #    # If the selection has changed, update session state and persist the new voice
+    #    if selected_voice != current_voice:
+    #        st.session_state.selected_voice = selected_voice
+    #        save_voice_pref(selected_voice, st.session_state.user_id)
 
         # ---------------------------
         # For Main System Instructions
@@ -3444,184 +3444,184 @@ def main():
                 key=st.session_state.custom_prompt_widget_key
             )
 
-        # ---------------------------
-        # For Voice Instructions
-        # ---------------------------
-        if "voice_custom_prompt" not in st.session_state:
-            st.session_state.voice_custom_prompt = load_voice_instructions(st.session_state.user_id) or ""
-        if "voice_instructions_widget_key" not in st.session_state:
-            st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
-        voice_container = st.empty()
-        voice_instructions = voice_container.text_area(
-            "-> Customize your advanced voice mode voice & tone.\n\n",
-            value=st.session_state.voice_custom_prompt,
-            key=st.session_state.voice_instructions_widget_key
-        )
-        if voice_instructions != st.session_state.voice_custom_prompt:
-            st.session_state.voice_custom_prompt = voice_instructions
-            save_voice_instructions(voice_instructions, st.session_state.user_id)
+    #    # ---------------------------
+    #    # For Voice Instructions
+    #    # ---------------------------
+    #    if "voice_custom_prompt" not in st.session_state:
+    #        st.session_state.voice_custom_prompt = load_voice_instructions(st.session_state.user_id) or ""
+    #    if "voice_instructions_widget_key" not in st.session_state:
+    #        st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
+    #    voice_container = st.empty()
+    #    voice_instructions = voice_container.text_area(
+    #        "-> Customize your advanced voice mode voice & tone.\n\n",
+    #        value=st.session_state.voice_custom_prompt,
+    #        key=st.session_state.voice_instructions_widget_key
+    #    )
+    #    if voice_instructions != st.session_state.voice_custom_prompt:
+    #        st.session_state.voice_custom_prompt = voice_instructions
+    #        save_voice_instructions(voice_instructions, st.session_state.user_id)
 
-        # Button to restore default voice instructions
-        if st.button("Restore Default Prompt (Voice Instructions)"):
-            st.session_state.voice_custom_prompt = DEFAULT_VOICE_PROMPT
-            save_voice_instructions(DEFAULT_VOICE_PROMPT, st.session_state.user_id)
-            st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
-            voice_container.text_area(
-                "-> Customize your advanced voice mode voice & tone.\n\n"
-                "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
-                value=st.session_state.voice_custom_prompt,
-                key=st.session_state.voice_instructions_widget_key
-            )
+    #    # Button to restore default voice instructions
+    #    if st.button("Restore Default Prompt (Voice Instructions)"):
+    #        st.session_state.voice_custom_prompt = DEFAULT_VOICE_PROMPT
+    #        save_voice_instructions(DEFAULT_VOICE_PROMPT, st.session_state.user_id)
+    #        st.session_state.voice_instructions_widget_key = str(uuid.uuid4())
+    #        voice_container.text_area(
+    #            "-> Customize your advanced voice mode voice & tone.\n\n"
+    #            "-> Deleting the contents of this box & refreshing your browser restores a default prompt.",
+    #            value=st.session_state.voice_custom_prompt,
+    #            key=st.session_state.voice_instructions_widget_key
+    #        )
 
-        # --- Step 1: Upload Context ---
-        st.subheader("Step 1: Upload Context")
-        
-        # Create columns for the ISO code input
-        iso_col1, iso_col2 = st.columns([2, 1])
-        
-        with iso_col1:
-            iso_code = st.text_input(
-                "Enter the ISO country code (e.g., CH for Switzerland, US for United States)",
-                max_chars=2,
-                help="This code will be used to wrap your document content with appropriate markers."
-            ).upper()
-
-        with iso_col2:
-            if iso_code:
-                if validate_iso_code(iso_code):
-                    st.success(f"✓ Valid code: {iso_code}")
-                    
-                    # Add delete button
-                    if st.button(f"Delete data for {iso_code}"):
-                        with st.spinner(f"Deleting data for {iso_code}..."):
-                            success, message = delete_country_data(
-                                iso_code, 
-                                st.session_state.user_id
-                            )
-                            if success:
-                                st.success(message)
-                                # Clear relevant session state
-                                for stage in ['store', 'query', 'retrieve', 'generate']:
-                                    if f'{stage}_data' in st.session_state:
-                                        st.session_state[f'{stage}_data'] = None
-                            else:
-                                st.error(message)
-                else:
-                    st.error("Invalid code")
-
-        # Wrap the uploader in a form with clear_on_submit=True
-        with st.form("upload_form", clear_on_submit=True):
-            uploaded_files = st.file_uploader(
-                "-> Upload one or more documents",
-                type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
-                accept_multiple_files=True
-            )
-            submitted = st.form_submit_button("Run Step 1: Upload Context")
-
-        # In main(), in the upload section:
-        if submitted:
-            if not iso_code or not validate_iso_code(iso_code):
-                st.error("Please enter a valid ISO country code first.")
-                return
-
-            if uploaded_files:
-                all_xml_docs = []
-                for uploaded_file in uploaded_files:
-                    text = extract_text_from_file(
-                        uploaded_file, 
-                        iso_code=iso_code,
-                        user_id=st.session_state.user_id
-                    )
-                    if text:
-                        all_xml_docs.append(text)
-
-                if all_xml_docs:
-                    # Combine without separators
-                    combined_text = "\n".join(all_xml_docs)
-                    st.session_state.uploaded_text = combined_text
-                    update_stage("upload", {
-                        'content': combined_text,
-                        'preview': combined_text[:600],
-                        'size': len(combined_text)
-                    })
-                    st.success("Files uploaded and processed!")
-                else:
-                    st.error("No text could be extracted...")
-
-        # --- Step 2: Chunk Context ---
-        st.subheader("Step 2: Chunk Context")
-        if st.button("Run Step 2: Chunk Context"):
-            if st.session_state.uploaded_text:
-                # Debug: Show first 500 chars of XML
-                st.code(st.session_state.uploaded_text[:3500], language='xml')
-                
-                try:
-                    chunks = parse_xml_for_chunks(st.session_state.uploaded_text)
-                    st.session_state.chunks = chunks
-                    st.success(f"Found {len(chunks)} chunk(s).")
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-                    st.code(traceback.format_exc())
-            else:
-                st.warning("Please upload at least one document first.")
-        
-        # --- Step 3: Embed Context ---
-        st.subheader("Step 3: Embed Context")
-        if st.button("Run Step 3: Embed Context"):
-            if not st.session_state.get("api_key"):
-                st.error("OpenAI API key not set. Please provide a valid API key in the sidebar before running this step.")
-            elif st.session_state.chunks:
-                try:
-                    embedding_data = embed_text(st.session_state.chunks, update_stage_flag=True, return_data=True)
-                    st.session_state.embeddings = embedding_data
-                    st.success("Embeddings created!")
-                except Exception as e:
-                    st.error(f"An error occurred while generating embeddings: {e}")
-            else:
-                st.warning("Please chunk the document first.")
-        
-        # --- Step 4: Store ---
-        st.subheader("Step 4: Store Embedded Context")
-        # In main(), replace:
-        if st.button("Run Step 4: Store Embedded Context"):
-            if st.session_state.chunks and st.session_state.embeddings:
-                # Create default metadata for each chunk
-                metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
-                add_to_chroma_collection(
-                    collection_name="rag_collection",
-                    chunks=st.session_state.chunks,
-                    metadatas=metadatas  # Pass only metadatas
-                )
-                st.success("Data stored in data collection 'rag_collection'!")
-            else:
-                st.warning("Ensure document is uploaded, chunked, and embedded.")
-        
-        # --- Step 5A: Embed Query (Optional) ---
-        st.subheader("Step 5A: Embed Query (Optional)")
-        query_text = st.text_input("-> Enter a query to see how it is embedded into vectors", key="query_text_input")
-
-        if st.button("Run Step 5A: Embed Query"):
-            current_query = st.session_state.query_text_input
-            if current_query.strip():
-                query_data = embed_text([current_query], update_stage_flag=False, return_data=True)
-                query_data['query'] = current_query
-                update_stage('query', query_data)
-                st.session_state.query_embedding = query_data["embeddings"]
-                st.session_state.query_text_step5 = current_query
-                st.success("Query vectorized!")
-            else:
-                st.warning("Please enter a query.")
-        
-        # --- Step 5B: Retrieve Query Embeddings (Optional) ---
-        st.subheader("Step 5B: Retrieve Matching Chunks (Optional)")
-        if st.button("Run Step 5B: Retrieve Matching Chunks"):
-            if st.session_state.query_embedding:
-                passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection", n_results=5)
-                st.session_state.retrieved_passages = passages
-                st.session_state.retrieved_metadata = metadata
-                st.success("Relevant chunks retrieved based on your query in Step 5A!")
-            else:
-                st.warning("Run Step 5A (Embed Query) first.")
+    #    # --- Step 1: Upload Context ---
+    #    st.subheader("Step 1: Upload Context")
+    #    
+    #    # Create columns for the ISO code input
+    #    iso_col1, iso_col2 = st.columns([2, 1])
+    #    
+    #    with iso_col1:
+    #        iso_code = st.text_input(
+    #            "Enter the ISO country code (e.g., CH for Switzerland, US for United States)",
+    #            max_chars=2,
+    #            help="This code will be used to wrap your document content with appropriate markers."
+    #        ).upper()
+#
+    #    with iso_col2:
+    #        if iso_code:
+    #            if validate_iso_code(iso_code):
+    #                st.success(f"✓ Valid code: {iso_code}")
+    #                
+    #                # Add delete button
+    #                if st.button(f"Delete data for {iso_code}"):
+    #                    with st.spinner(f"Deleting data for {iso_code}..."):
+    #                        success, message = delete_country_data(
+    #                            iso_code, 
+    #                            st.session_state.user_id
+    #                        )
+    #                        if success:
+    #                            st.success(message)
+    #                            # Clear relevant session state
+    #                            for stage in ['store', 'query', 'retrieve', 'generate']:
+    #                                if f'{stage}_data' in st.session_state:
+    #                                    st.session_state[f'{stage}_data'] = None
+    #                        else:
+    #                            st.error(message)
+    #            else:
+    #                st.error("Invalid code")
+#
+    #    # Wrap the uploader in a form with clear_on_submit=True
+    #    with st.form("upload_form", clear_on_submit=True):
+    #        uploaded_files = st.file_uploader(
+    #            "-> Upload one or more documents",
+    #            type=["txt", "pdf", "docx", "csv", "xlsx", "rtf"],
+    #            accept_multiple_files=True
+    #        )
+    #        submitted = st.form_submit_button("Run Step 1: Upload Context")
+#
+    #    # In main(), in the upload section:
+    #    if submitted:
+    #        if not iso_code or not validate_iso_code(iso_code):
+    #            st.error("Please enter a valid ISO country code first.")
+    #            return
+#
+    #        if uploaded_files:
+    #            all_xml_docs = []
+    #            for uploaded_file in uploaded_files:
+    #                text = extract_text_from_file(
+    #                    uploaded_file, 
+    #                    iso_code=iso_code,
+    #                    user_id=st.session_state.user_id
+    #                )
+    #                if text:
+    #                    all_xml_docs.append(text)
+#
+    #            if all_xml_docs:
+    #                # Combine without separators
+    #                combined_text = "\n".join(all_xml_docs)
+    #                st.session_state.uploaded_text = combined_text
+    #                update_stage("upload", {
+    #                    'content': combined_text,
+    #                    'preview': combined_text[:600],
+    #                    'size': len(combined_text)
+    #                })
+    #                st.success("Files uploaded and processed!")
+    #            else:
+    #                st.error("No text could be extracted...")
+#
+    #    # --- Step 2: Chunk Context ---
+    #    st.subheader("Step 2: Chunk Context")
+    #    if st.button("Run Step 2: Chunk Context"):
+    #        if st.session_state.uploaded_text:
+    #            # Debug: Show first 500 chars of XML
+    #            st.code(st.session_state.uploaded_text[:3500], language='xml')
+    #            
+    #            try:
+    #                chunks = parse_xml_for_chunks(st.session_state.uploaded_text)
+    #                st.session_state.chunks = chunks
+    #                st.success(f"Found {len(chunks)} chunk(s).")
+    #            except Exception as e:
+    #                st.error(f"Error: {str(e)}")
+    #                st.code(traceback.format_exc())
+    #        else:
+    #            st.warning("Please upload at least one document first.")
+    #    
+    #    # --- Step 3: Embed Context ---
+    #    st.subheader("Step 3: Embed Context")
+    #    if st.button("Run Step 3: Embed Context"):
+    #        if not st.session_state.get("api_key"):
+    #            st.error("OpenAI API key not set. Please provide a valid API key in the sidebar before running this step.")
+    #        elif st.session_state.chunks:
+    #            try:
+    #                embedding_data = embed_text(st.session_state.chunks, update_stage_flag=True, return_data=True)
+    #                st.session_state.embeddings = embedding_data
+    #                st.success("Embeddings created!")
+    #            except Exception as e:
+    #                st.error(f"An error occurred while generating embeddings: {e}")
+    #        else:
+    #            st.warning("Please chunk the document first.")
+    #    
+    #    # --- Step 4: Store ---
+    #    st.subheader("Step 4: Store Embedded Context")
+    #    # In main(), replace:
+    #    if st.button("Run Step 4: Store Embedded Context"):
+    #        if st.session_state.chunks and st.session_state.embeddings:
+    #            # Create default metadata for each chunk
+    #            metadatas = [{"source": "uploaded_document"} for _ in st.session_state.chunks]
+    #            add_to_chroma_collection(
+    #                collection_name="rag_collection",
+    #                chunks=st.session_state.chunks,
+    #                metadatas=metadatas  # Pass only metadatas
+    #            )
+    #            st.success("Data stored in data collection 'rag_collection'!")
+    #        else:
+    #            st.warning("Ensure document is uploaded, chunked, and embedded.")
+    #    
+    #    # --- Step 5A: Embed Query (Optional) ---
+    #    st.subheader("Step 5A: Embed Query (Optional)")
+    #    query_text = st.text_input("-> Enter a query to see how it is embedded into vectors", key="query_text_input")
+#
+    #    if st.button("Run Step 5A: Embed Query"):
+    #        current_query = st.session_state.query_text_input
+    #        if current_query.strip():
+    #            query_data = embed_text([current_query], update_stage_flag=False, return_data=True)
+    #            query_data['query'] = current_query
+    #            update_stage('query', query_data)
+    #            st.session_state.query_embedding = query_data["embeddings"]
+    #            st.session_state.query_text_step5 = current_query
+    #            st.success("Query vectorized!")
+    #        else:
+    #            st.warning("Please enter a query.")
+    #    
+    #    # --- Step 5B: Retrieve Query Embeddings (Optional) ---
+    #    st.subheader("Step 5B: Retrieve Matching Chunks (Optional)")
+    #    if st.button("Run Step 5B: Retrieve Matching Chunks"):
+    #        if st.session_state.query_embedding:
+    #            passages, metadata = query_collection(st.session_state.query_text_step5, "rag_collection", n_results=5)
+    #            st.session_state.retrieved_passages = passages
+    #            st.session_state.retrieved_metadata = metadata
+    #            st.success("Relevant chunks retrieved based on your query in Step 5A!")
+    #        else:
+    #            st.warning("Run Step 5A (Embed Query) first.")
         
         # --- Step 6: Get Answer ---
         st.subheader("Step 6: Get Answer")
@@ -3644,16 +3644,16 @@ def main():
             else:
                 st.warning("Please enter your final question.")
     
-    with col2:
-        st.header("RAG Pipeline Visualization")
-        component_args = {
-            "currentStage": st.session_state.current_stage,
-            "stageData": { s: st.session_state.get(f'{s}_data')
-                           for s in ['upload', 'chunk', 'embed', 'store', 'query', 'retrieve', 'generate']
-                           if st.session_state.get(f'{s}_data') is not None }
-        }
-        pipeline_html = get_pipeline_component(component_args)
-        components.html(pipeline_html, height=2000, scrolling=True)
+   # with col2:
+   #     st.header("RAG Pipeline Visualization")
+   #     component_args = {
+   #         "currentStage": st.session_state.current_stage,
+   #         "stageData": { s: st.session_state.get(f'{s}_data')
+   #                        for s in ['upload', 'chunk', 'embed', 'store', 'query', 'retrieve', 'generate']
+   #                        if st.session_state.get(f'{s}_data') is not None }
+   #     }
+   #     pipeline_html = get_pipeline_component(component_args)
+   #     components.html(pipeline_html, height=2000, scrolling=True)
 
 
 if __name__ == "__main__":
