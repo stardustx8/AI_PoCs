@@ -239,13 +239,27 @@ if st.sidebar.button("Logout", key="logout_button"):
 
 st.sidebar.success(f"Logged in as {st.session_state.user_id}")
 
-# --- Now, right after confirming login, initialize the Chroma client:
-chroma_client = init_user_view_chroma_client(st.session_state.user_id)
+# --- After login (login block is above and st.session_state.user_id is set) ---
+
+# Force the Chroma folder to the same folder as in the main app.
+user_dirs = get_user_specific_directory(st.session_state.user_id)
+st.session_state["chroma_folder"] = user_dirs["chroma"]
+st.sidebar.success(f"ChromaDB path set to: {st.session_state['chroma_folder']}")
+
+# Initialize the Chroma client using the forced folder
+from chromadb.config import Settings
+import chromadb
+
+chroma_client = chromadb.PersistentClient(
+    path=st.session_state["chroma_folder"],
+    settings=Settings(anonymized_telemetry=False, allow_reset=True, is_persistent=True)
+)
+
 if chroma_client is None:
     st.error("Could not init Chroma for user: " + str(st.session_state.user_id))
     st.stop()
 
-# Confirm we see a collection:
+# Now, list the collections to verify
 try:
     all_collections = chroma_client.list_collections()
     st.sidebar.write("Collections:", [c.name for c in all_collections])
