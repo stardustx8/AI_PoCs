@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DE>
+    <metadata>
+        <filename>test table.docx</filename>
+        <timestamp>2025-02-13 22:41:14</timestamp>
+        <country_code>DE</country_code>
+    </metadata>
+    <content>
+<table>
+<header>
+<cell>Rules for Western Germany</cell>
+<cell>Rules for Eastern Germany</cell>
+</header>
+<rows>
+<row>
+<cell>It’s illegal to sell knives to anyone aged below 16</cell>
+<cell>It’s illegal to sell knives to anyone aged below 24</cell>
+</row>
+</rows>
+</table>
+    </content>
+</DE>

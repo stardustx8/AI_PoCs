@@ -24,6 +24,7 @@ from openai import OpenAI
 import openai
 import chromadb
 from chromadb.config import Settings
+import unicodedata
 import hashlib
 import glob
 from typing import List, Dict, Any, Optional, Union, Set, Tuple
@@ -382,21 +383,84 @@ class OpenAIEmbeddingFunction:
     def __init__(self, api_key):
         self.api_key = api_key.strip()
         self.client = OpenAI(api_key=self.api_key)
+    
     def __call__(self, input):
-        if not isinstance(input, list):
-            input = [input]
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Input type: {type(input)}")
+            st.write(f"DEBUG => Input preview: {str(input)[:100]}")
+        
+        if isinstance(input, str):
+            texts = [input]
+        elif isinstance(input, list):
+            texts = input
+        else:
+            raise ValueError(f"Unsupported input type: {type(input)}")
+        
+        sanitized_texts = []
+        for text in texts:
+            if isinstance(text, (dict, list)):
+                text = str(text)
+            elif not isinstance(text, str):
+                text = str(text)
+            sanitized_texts.append(sanitize_text(text))
+        
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Generating embeddings for {len(sanitized_texts)} texts")
+            st.write(f"DEBUG => First text preview: {sanitized_texts[0][:100] if sanitized_texts else 'None'}")
+        
         try:
+            if not sanitized_texts or not any(text.strip() for text in sanitized_texts):
+                raise ValueError("No valid text to embed")
+            
             response = self.client.embeddings.create(
-                input=input,
+                input=sanitized_texts,
                 model="text-embedding-3-large"
             )
-            return [item["embedding"] for item in response["data"]]
+            
+            # Extract embeddings from response - fixed this part
+            if isinstance(response, dict):
+                embeddings = [item["embedding"] for item in response["data"]]
+            else:
+                embeddings = [item.embedding for item in response.data]
+            
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Generated {len(embeddings)} embeddings")
+                if embeddings:
+                    st.write(f"DEBUG => Embedding dimension: {len(embeddings[0])}")
+            
+            return embeddings
+            
         except Exception as e:
-            st.error(f"Error generating embeddings: {e}")
-            return None
-    @property
-    def embeddings(self):
-        return OpenAIEmbeddings(self.client)
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Error generating embeddings: {str(e)}")
+                st.write(f"DEBUG => Error type: {type(e)}")
+                if hasattr(e, 'response'):
+                    st.write(f"DEBUG => Response: {e.response.text if hasattr(e.response, 'text') else 'No response text'}")
+            raise
+
+    def __hash__(self):
+        return int(hashlib.md5(self.api_key.encode('utf-8')).hexdigest(), 16)
+    
+    def __eq__(self, other):
+        return isinstance(other, OpenAIEmbeddingFunction) and self.api_key == other.api_key
+
+def sanitize_text(text: str) -> str:
+    """Exactly match the sanitization from main app."""
+    text = remove_emoji(text)
+    normalized = unicodedata.normalize('NFKD', text)
+    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+    return ascii_text
+
+def remove_emoji(text: str) -> str:
+    """Remove emoji exactly as in main app."""
+    emoji_pattern = re.compile(
+        "[" 
+        u"\U0001F600-\U0001F64F"  
+        u"\U0001F300-\U0001F5FF"  
+        u"\U0001F680-\U0001F6FF"  
+        u"\U0001F1E0-\U0001F1FF"  
+        "]+", flags=re.UNICODE)
+    return emoji_pattern.sub(r'', text)
 
 # =======================
 # 2) LLMCountryDetector
@@ -679,18 +743,49 @@ def get_chroma_client():
         return None
 
 def get_collection(collection_name="rag_collection"):
-    c = get_chroma_client()
-    if not c:
+    """Get ChromaDB collection with proper embedding function."""
+    if not st.session_state.get("api_key"):
+        st.error("OpenAI API key not set")
         return None
+        
     try:
-        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
-        coll = c.get_collection(
-            name=collection_name,
-            embedding_function=embedding_function
+        dirs = get_user_specific_directory(st.session_state.user_id)
+        client = chromadb.PersistentClient(
+            path=dirs["chroma"],
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=True
+            )
         )
-        return coll
+        
+        # Initialize embedding function exactly as in main app
+        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
+        
+        # Test the embedding function
+        test_result = embedding_function(["test"])
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
+            
+        try:
+            # Get existing collection with embedding function
+            collection = client.get_collection(
+                name=collection_name,
+                embedding_function=embedding_function
+            )
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Retrieved collection '{collection_name}'")
+                st.write(f"DEBUG => Collection embedding function hash: {hash(collection._embedding_function)}")
+            return collection
+            
+        except Exception as e:
+            if DEBUG_MODE:
+                st.write(f"DEBUG => Error getting collection: {str(e)}")
+            return None
+            
     except Exception as e:
-        st.error(f"Error accessing collection: {str(e)}")
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Error in get_collection: {str(e)}")
         return None
     
 def query_collection(query: str, collection_name: str):
@@ -1138,78 +1233,63 @@ def parse_single_xml_doc(xml_text: str, max_chunk_size: int = 1000) -> List[Dict
 # 8) MAIN UI (No login)
 # =======================
 def main():
-    # st.set_page_config(page_title="Simple RAG UI + Dir Browser (No Login)", layout="wide")
+    st.image("https://brandpulse.ch/wp-content/uploads/2024/02/0_BP_Victorinox_Case-Study-2000x800.png", use_container_width=True)
+    st.title("Knife Legislation Expert")
 
-   
+    if not st.session_state.is_authenticated:
+        st.warning("Please log in to use the system")
+        return
 
-    st.sidebar.header("Settings")
-
-    
-    # Initialize session variable for API key if not already set.
+    # Ensure API key is set
     if 'api_key' not in st.session_state:
         st.session_state.api_key = None
 
     with st.sidebar:
         api_key = st.text_input("OpenAI API Key", type="password")
         if api_key:
+            st.session_state.api_key = api_key.strip()
+            
+            # Test embedding function
             try:
-                # Attempt to verify the key using your custom OpenAI class
-                client = OpenAI(api_key=api_key)  # <-- Make sure OpenAI is defined in your code
-                st.session_state.api_key = api_key
-                st.success("API key set successfully!")
+                embedding_function = OpenAIEmbeddingFunction(st.session_state.api_key)
+                test_result = embedding_function(["test"])
+                if DEBUG_MODE:
+                    st.write(f"DEBUG => Embedding test successful. Dimension: {len(test_result[0])}")
+                st.success("API key set and tested successfully!")
             except Exception as e:
-                st.error(f"Error initializing OpenAI client: {e}")
+                st.error(f"Error testing API key: {str(e)}")
 
+    # After login, force Chroma path to user's directory
+    user_dirs = get_user_specific_directory(st.session_state.user_id)
+    st.session_state["chroma_folder"] = user_dirs["chroma"]
+    
+    if DEBUG_MODE:
+        st.write(f"DEBUG => Using Chroma path: {st.session_state['chroma_folder']}")
 
-    # Directory Browser
-    build_directory_browser()
-
-    # Check Collections
+    # Check Collections button
     if st.sidebar.button("Check Collections"):
-        if not st.session_state.get("chroma_folder", "").strip():
-            st.sidebar.warning("No Chroma DB folder is set. Use the directory browser above.")
-        else:
-            st.write("DEBUG => Checking collections in user-chosen folder...")  # DEBUG ADDED
+        coll = get_collection("rag_collection")
+        if coll:
             try:
-                client = get_chroma_client()
-                if client:
-                    try:
-                        coll_list = client.list_collections()
-                        if coll_list:
-                            names = [c.name for c in coll_list]
-                            st.sidebar.success(f"Found {len(names)} collection(s): {names}")
-                            
-                            # Optionally verify each collection
-                            if DEBUG_MODE:
-                                for name in names:
-                                    try:
-                                        coll = client.get_collection(name=name)
-                                        count = len(coll.peek()['ids'])
-                                        st.write(f"DEBUG => Collection '{name}' has {count} documents")
-                                    except Exception as e:
-                                        st.write(f"DEBUG => Error checking collection '{name}': {str(e)}")
-                        else:
-                            st.sidebar.info("No collections found")
-                    except Exception as e:
-                        st.sidebar.error(f"Error listing collections: {str(e)}")
-                else:
-                    st.sidebar.warning("ChromaDB client not initialized")
+                count = len(coll.peek()["ids"])
+                st.sidebar.success(f"Found collection with {count} documents")
             except Exception as e:
-                st.sidebar.error(f"Error accessing ChromaDB: {str(e)}")
+                st.sidebar.error(f"Error checking collection: {str(e)}")
+        else:
+            st.sidebar.warning("No collection found or error accessing it")
 
-    st.image("https://brandpulse.ch/wp-content/uploads/2024/02/0_BP_Victorinox_Case-Study-2000x800.png", use_container_width=True)
-    st.title("Knife Legislation Expert")
-    # st.write("Enter your API key, pick a folder with your Chroma DB, then ask a question.")
-
-    # --- Input the user's question (bound to session state key "question") ---
+    # Question input and answer generation
     st.text_input(
-    "Your question:", 
-    key="question", 
-    help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ...")
+        "Your question:", 
+        key="question", 
+        help="Write country names out in full or use valid ISO codes in capitals, ex. 'CH', 'US', ..."
+    )
 
-    # --- Primary "Get Answer" Button ---
     if st.button("Get Answer"):
-        query_and_get_answer()
+        if not st.session_state.get("api_key"):
+            st.error("Please set your OpenAI API key first")
+        else:
+            query_and_get_answer()
 
 if __name__ == "__main__":
     main()
