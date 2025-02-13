@@ -42,7 +42,8 @@ BASE_DEFAULT_PROMPT = (
     "    thorough, accurate results.\n"
     "  </ROLE>\n\n"
     "  <INSTRUCTIONS>\n"
-    "    1. Always rely exclusively on the RAG documents for any factual information.\n\n"
+    "    0. CRITICAL: You can ONLY use information that appears word-for-word in the RAG documents.\n\n"
+    "    1. YOU MUST rely exclusively on the RAG documents for any factual information in the CASEA structure (CASEB is more liberal).\n\n"
     "    2. EXTREMELY IMPORTANT:\n"
     "       - If the user’s query relates to **only one** country and your RAG does **not** have matching information\n"
     "         for that country, you must use the **CASEB** structure (but do NEVER mention 'CASEB' as a term to the user, as this is only for your internal referencing.) .\n"
@@ -586,7 +587,6 @@ def query_collection(query: str, collection_name: str):
 
 # =======================
 # 6) generate_answer
-# =======================
 def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_results: int = 5):
     """
     1) For each ISO code in iso_codes, do a strict filter query where={"country_code": code}.
@@ -601,6 +601,7 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
     final_passages = []
     final_metadatas = []
     used_passages = set()
+    missing_countries = set(iso_codes)  # Track which countries yield no results
 
     if not iso_codes:
         # fallback => broad search if no codes detected
@@ -630,6 +631,7 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
                 st.write(f"DEBUG => Found {len(all_docs.get('documents', []))} documents for {code}")
             
             if all_docs and all_docs.get("documents"):
+                missing_countries.discard(code)  # Found data for this country
                 # Then do similarity search within these documents
                 res = coll.query(
                     query_texts=[query_text],
@@ -664,6 +666,14 @@ def get_strict_filtered_passages(query_text: str, iso_codes: List[str], n_result
         st.write(f"DEBUG => Final results: {len(final_passages)} passages from {len(iso_codes)} countries")
         for i, (p, m) in enumerate(zip(final_passages, final_metadatas)):
             st.write(f"DEBUG => Passage {i+1} from {m.get('country_code', 'unknown')}")
+
+    # After all queries, check if we have any missing countries
+    if missing_countries and len(iso_codes) == 1:
+        # Special case: Single country query with no data
+        if DEBUG_MODE:
+            st.write(f"DEBUG => No data found for single country query: {list(missing_countries)[0]}")
+        st.warning(f"No data found for country code: {list(missing_countries)[0]}")
+        return [], []  # Return empty lists to trigger CASEB format in query_and_get_answer
 
     return final_passages, final_metadatas
 
@@ -816,7 +826,7 @@ def generate_answer(query: str, passages, metadata):
             model="chatgpt-4o-latest",
             messages=messages,
             max_tokens=1500,
-            temperature=0.3
+            temperature=0.2
         )
         return resp["choices"][0]["message"]["content"]
     except Exception as e:
