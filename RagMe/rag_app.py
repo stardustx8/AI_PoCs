@@ -148,6 +148,8 @@ import streamlit.components.v1 as components
 import uuid
 import re
 import hnswlib
+if not hasattr(hnswlib.Index, "file_handle_count"):
+    hnswlib.Index.file_handle_count = 0
 import json
 import time
 import numpy as np  # optional for numeric ops
