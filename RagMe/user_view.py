@@ -42,8 +42,7 @@ BASE_DEFAULT_PROMPT = (
     "    thorough, accurate results.\n"
     "  </ROLE>\n\n"
     "  <INSTRUCTIONS>\n"
-    "    0. CRITICAL: You can ONLY use information that appears word-for-word in the RAG documents.\n\n"
-    "    1. YOU MUST rely exclusively on the RAG documents for any factual information in the CASEA structure (CASEB is more liberal).\n\n"
+    "    1. Always rely exclusively on the RAG documents for any factual information.\n\n"
     "    2. EXTREMELY IMPORTANT:\n"
     "       - If the user’s query relates to **only one** country and your RAG does **not** have matching information\n"
     "         for that country, you must use the **CASEB** structure (but do NEVER mention 'CASEB' as a term to the user, as this is only for your internal referencing.) .\n"
@@ -826,7 +825,7 @@ def generate_answer(query: str, passages, metadata):
             model="chatgpt-4o-latest",
             messages=messages,
             max_tokens=1500,
-            temperature=0.2
+            temperature=0.3
         )
         return resp["choices"][0]["message"]["content"]
     except Exception as e:
