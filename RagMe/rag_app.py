@@ -136,13 +136,18 @@ def save_voice_instructions(text: str, user_id: str):
     path.parent.mkdir(exist_ok=True)
     path.write_text(text)
 
+import sys
+try:
+    import pysqlite3 as sqlite3
+    sys.modules["sqlite3"] = sqlite3
+except ImportError:
+    pass
 import chromadb
 from chromadb.config import Settings
 import streamlit.components.v1 as components
 import uuid
 import re
 import hnswlib
-import sys
 import json
 import time
 import numpy as np  # optional for numeric ops

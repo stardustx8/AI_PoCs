@@ -1,5 +1,11 @@
 # user_view.py
 import streamlit as st
+import sys
+try:
+    import pysqlite3 as sqlite3
+    sys.modules["sqlite3"] = sqlite3
+except ImportError:
+    pass
 import os
 import json
 import requests
