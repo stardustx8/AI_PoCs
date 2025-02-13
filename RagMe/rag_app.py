@@ -223,31 +223,68 @@ from chromadb.utils import embedding_functions
 from chromadb.errors import ChromaError
 
 def init_chroma_client():
-    if "api_key" not in st.session_state:
+    """Enhanced ChromaDB initialization for Streamlit Cloud"""
+    if "api_key" not in st.session_state or not st.session_state.user_id:
         return None, None
 
-    dirs = get_user_specific_directory(st.session_state["user_id"])
+    dirs = get_user_specific_directory(st.session_state.user_id)
+    verify_chroma_persistence(st.session_state.user_id)  # Debug check
     
     try:
-        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"].strip())
-        
-        # Test the embedding function
+        # Create embedding function
+        embedding_function = OpenAIEmbeddingFunction(st.session_state["api_key"])
         test_result = embedding_function(["test"])
-        if DEBUG_MODE:
-            st.write(f"DEBUG => Embedding function test successful. Dimension: {len(test_result[0])}")
         
+        if DEBUG_MODE:
+            st.write(f"DEBUG => Test embedding dimension: {len(test_result[0])}")
+        
+        # Configure ChromaDB settings
+        settings = Settings(
+            anonymized_telemetry=False,
+            allow_reset=True,
+            is_persistent=True,
+            persist_directory=dirs["chroma"]
+        )
+        
+        # Initialize client with explicit persist_directory
         client = chromadb.PersistentClient(
             path=dirs["chroma"],
-            settings=Settings(
-                anonymized_telemetry=False
-            )
+            settings=settings
         )
+        
+        # Immediately test persistence
+        collection_name = "test_persistence"
+        try:
+            # Create test collection
+            coll = client.create_collection(
+                name=collection_name,
+                embedding_function=embedding_function
+            )
+            
+            # Add test document
+            coll.add(
+                documents=["test document"],
+                metadatas=[{"test": True}],
+                ids=["test_id"]
+            )
+            
+            # Force persist
+            client.persist()
+            
+            # Clean up
+            client.delete_collection(collection_name)
+            
+            if DEBUG_MODE:
+                st.write("DEBUG => Persistence test successful")
+                
+        except Exception as e:
+            st.write(f"DEBUG => Persistence test failed: {e}")
         
         return client, embedding_function
         
     except Exception as e:
         if DEBUG_MODE:
-            st.write(f"DEBUG => Error initializing ChromaDB client: {str(e)}")
+            st.write(f"DEBUG => ChromaDB initialization error: {e}")
         return None, None
     
 
@@ -396,6 +433,43 @@ class LLMCountryDetector:
                 st.write(f"DEBUG: LLM error: {str(e)}")
 
         return []
+
+
+
+
+def verify_chroma_persistence(user_id: str):
+    """Debug ChromaDB persistence on Streamlit Cloud"""
+    dirs = get_user_specific_directory(user_id)
+    chroma_path = dirs["chroma"]
+    
+    # Check directory contents
+    st.write("DEBUG => Checking Chroma directory:")
+    st.write(f"Path: {chroma_path}")
+    
+    if not os.path.exists(chroma_path):
+        st.write("ERROR: Directory does not exist!")
+        return
+        
+    # List all files
+    files = []
+    for root, dirs, filenames in os.walk(chroma_path):
+        for f in filenames:
+            full_path = os.path.join(root, f)
+            size = os.path.getsize(full_path)
+            files.append(f"{full_path} ({size} bytes)")
+    
+    st.write("Files found:")
+    for f in files:
+        st.write(f)
+        
+    # Check permissions
+    st.write("\nPermissions:")
+    try:
+        st.write(f"Read: {os.access(chroma_path, os.R_OK)}")
+        st.write(f"Write: {os.access(chroma_path, os.W_OK)}")
+        st.write(f"Execute: {os.access(chroma_path, os.X_OK)}")
+    except Exception as e:
+        st.write(f"Error checking permissions: {e}")
 
 
 ##############################################################################
