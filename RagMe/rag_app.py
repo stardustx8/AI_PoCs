@@ -142,12 +142,16 @@ try:
     sys.modules["sqlite3"] = sqlite3
 except ImportError:
     pass
+
+import hnswlib
+if not hasattr(hnswlib.Index, "file_handle_count"):
+    hnswlib.Index.file_handle_count = 0
+    
 import chromadb
 from chromadb.config import Settings
 import streamlit.components.v1 as components
 import uuid
 import re
-import hnswlib
 import json
 import time
 import numpy as np  # optional for numeric ops
