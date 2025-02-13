@@ -682,6 +682,7 @@ def extract_image_data(text: str, metadata: Optional[Dict[str, Any]] = None) -> 
     return None
 
 def query_and_get_answer():
+    global DEBUG_MODE
     if not st.session_state.get("api_key"):
         st.error("Please set your OpenAI API key")
         return
