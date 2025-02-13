@@ -2671,17 +2671,17 @@ def delete_user_collections(user_id: str) -> tuple[bool, str]:
         if not os.path.exists(user_chroma_db):
             return True, "No collections found for user"
 
+        # Use chromadb.PersistentClient instead of chroma_client.PersistentClient
         temp_client = chromadb.PersistentClient(
             path=user_chroma_db,
-            settings=Settings(
-                anonymized_telemetry=False
-            )
+            settings=Settings(anonymized_telemetry=False)
         )
         collections = temp_client.list_collections()
         for collection in collections:
             temp_client.delete_collection(collection.name)
         
         shutil.rmtree(user_chroma_db)
+        user_dir = dirs["base"]
         shutil.rmtree(user_dir)
         os.makedirs(user_dir, exist_ok=True)
         
