@@ -333,38 +333,39 @@ import openai
 
 class LLMCountryDetector:
     SYSTEM_PROMPT = """
-        You are a specialized assistant for extracting ALL country references in ANY user text. 
-        You must detect and extract EVERY single country reference, including:
+        You are a specialized assistant for extracting ONLY EXPLICIT country references in text. 
+        You must detect and extract ONLY genuine country references, including:
 
         1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
-           - Extract all BUT ONLY CAPITAL(!!!) valid ISO 3166-1 alpha-2 2-letter codes like "CH", "US", "CN", "DE", etc.
-           - These MUST be extracted even when standalone
-           - Never skip any UPPERCASE(!!) 2-letter country code
-           - VERY IMPORTANT: EXCEPT of valid 2-letter ISO 3166-1 alpha-2 codes, all CODES shorter than 4 characters must be skipped!!!
-           - Example: "DE vs CH vs IT" MUST return all codes
+           - Extract ONLY valid ISO 3166-1 alpha-2 2-letter codes like "CH", "US", "CN", "DE"
+           - These must be UNAMBIGUOUS country codes in context
+           - Common words that happen to match codes (e.g., "in", "is", "me") should be IGNORED
+           - VERY IMPORTANT: DO NOT extract any word shorter than 4 characters unless it's explicitly a country code
+           - Example: "DE vs CH vs IT" => return all codes
+           - Example: "Log in to system" => return nothing (ignore "in")
 
-        2. FULL NAMES:
-           - "Switzerland", "United States", "China", "Germany", etc.
-           - "Swiss", "American", "Chinese", "German" (adjective form and other typical morphologies)
-           - Case does not matter for full names >= 4 characters: "Swiss = swiss = sWiSs" => "CH"
+        2. FULL COUNTRY NAMES:
+           - Only extract when clearly referring to countries: "Switzerland", "United States", etc.
+           - Only include adjective forms when clearly about the country: "Swiss regulations", "American law"
+           - Ignore when used in other contexts: "swiss cheese", "american football"
            
         3. CONTEXTUAL REFERENCES:
-           - "Swiss law" => "CH"
-           - "German regulations" => "DE"
-           - "Chinese market" => "CN"
+           - Only include when explicitly about the country: "Swiss law" => "CH"
+           - Ignore generic or ambiguous uses
 
-        EXTREMELY IMPORTANT:
-        - You MUST catch ALL ISO 3166-1 alpha-2 country codes (DE, CH, US, etc.)
-        - Never skip any valid ISO 3166-1 alpha-2 2-letter code or valid country full names >= 4 characters long
-        - If in doubt, don't include it
-        - Process the ENTIRE text, not just the beginning
+        EXTREMELY IMPORTANT RULES:
+        - NEVER extract common words that happen to match codes
+        - NEVER extract prepositions or articles that match codes
+        - Only extract codes that are EXPLICITLY referring to countries
+        - If in doubt, DO NOT include it
+        - Process the ENTIRE text thoroughly
 
         Output format must be EXACT JSON:
         [
             {"detected_phrase": "exact text found", "code": "XX"}
         ]
 
-        Examples of MANDATORY detection:
+        Examples:
         Input: "DE vs CH vs CN"
         Output: [
             {"detected_phrase": "DE", "code": "DE"},
@@ -372,12 +373,55 @@ class LLMCountryDetector:
             {"detected_phrase": "CN", "code": "CN"}
         ]
 
+        Input: "Log in to the system"
+        Output: []  # "in" is not a country reference
+
         Output ONLY valid JSON. No extra text.
     """.strip()
 
     def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
         self.client = OpenAI(api_key=api_key)
         self.model = model
+
+    def naive_pycountry_detection(self, text: str) -> List[Dict[str, str]]:
+        """
+        Enhanced fallback detection with strict filtering.
+        """
+        found_codes = []
+        used_codes = set()
+        
+        # Common words to ignore even if they match country codes
+        ignore_words = {
+            'IN', 'IS', 'IT', 'BE', 'ME', 'TO', 'DO', 'AT', 'BY', 'NO', 'SO',
+            'AS', 'AM', 'PM', 'ID', 'TV'
+        }
+
+        # First pass: Look specifically for explicit country codes
+        words = re.findall(r'\b[A-Z]{2}\b', text)  # Only match UPPERCASE
+        for w in words:
+            if w in ignore_words:
+                continue
+            country = pycountry.countries.get(alpha_2=w)
+            if country:
+                if w not in used_codes:
+                    # Additional context check
+                    context = re.findall(r'\w+\s+' + re.escape(w) + r'\s+\w+', text)
+                    if any(c.lower().startswith(('country', 'nation', 'code')) for c in context):
+                        found_codes.append({"detected_phrase": w, "code": w})
+                        used_codes.add(w)
+
+        # Second pass: Look for explicit country names
+        countries = set(c.name.upper() for c in pycountry.countries)
+        words = text.split()
+        for i, w in enumerate(words):
+            w_up = w.upper()
+            if len(w) >= 4 and w_up in countries:  # Only match full country names
+                country = pycountry.countries.get(name=w)
+                if country and country.alpha_2 not in used_codes:
+                    found_codes.append({"detected_phrase": w, "code": country.alpha_2})
+                    used_codes.add(country.alpha_2)
+
+        return found_codes
 
     def detect_countries_in_text(self, text: str) -> List[Dict[str, Any]]:
         """Enhanced country detection with better validation."""
@@ -467,44 +511,7 @@ class LLMCountryDetector:
                 st.write(f"DEBUG => LLMCountryDetector error: {str(e)}")
             return self.naive_pycountry_detection(text)
 
-    @staticmethod
-    def naive_pycountry_detection(text: str) -> List[Dict[str, str]]:
-        """
-        Enhanced fallback detection that prioritizes finding ALL country codes.
-        """
-        found_codes = []
-        used_codes = set()
-
-        # First pass: Look specifically for 2-letter codes
-        words = re.findall(r'\b[A-Za-z]{2}\b', text)
-        for w in words:
-            w_up = w.upper()
-            country = pycountry.countries.get(alpha_2=w_up)
-            if country:
-                if w_up not in used_codes:
-                    found_codes.append({"detected_phrase": w, "code": w_up})
-                    used_codes.add(w_up)
-
-        # Second pass: Look for country names
-        words = re.findall(r'\b[A-Za-z]+\b', text)
-        for w in words:
-            w_up = w.upper()
-            # Skip if it's already a known code
-            if w_up in used_codes:
-                continue
-            try:
-                # Try to find matching country
-                for c in pycountry.countries:
-                    if w_up in c.name.upper():
-                        iso2 = c.alpha_2
-                        if iso2 not in used_codes:
-                            found_codes.append({"detected_phrase": w, "code": iso2})
-                            used_codes.add(iso2)
-                        break
-            except:
-                pass
-
-        return found_codes
+    
 
     def detect_first_country_in_text(self, text: str):
         all_codes = self.detect_countries_in_text(text)
