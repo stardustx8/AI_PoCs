@@ -337,29 +337,26 @@ class LLMCountryDetector:
         You must detect and extract EVERY single country reference, including:
 
         1. FULL COUNTRY CODES (CRITICAL - HIGHEST PRIORITY)
-           - Extract all 2-letter codes like "CH", "US", "CN", "DE", etc.
+           - Extract all BUT ONLY CAPITAL(!!!) valid ISO 3166-1 alpha-2 2-letter codes like "CH", "US", "CN", "DE", etc.
            - These MUST be extracted even when standalone
-           - Never skip any 2-letter country code
-           - Example: "DE vs CH" MUST return both codes
+           - Never skip any UPPERCASE(!!) 2-letter country code
+           - VERY IMPORTANT: EXCEPT of valid 2-letter ISO 3166-1 alpha-2 codes, all CODES shorter than 4 characters must be skipped!!!
+           - Example: "DE vs CH vs IT" MUST return all codes
 
         2. FULL NAMES:
            - "Switzerland", "United States", "China", "Germany", etc.
-           - "Swiss", "American", "Chinese", "German" (adjective form)
+           - "Swiss", "American", "Chinese", "German" (adjective form and other typical morphologies)
+           - Case does not matter for full names >= 4 characters: "Swiss = swiss = sWiSs" => "CH"
            
-        3. COMMON ABBREVIATIONS:
-           - "USA" => "US"
-           - "PRC" => "CN"
-           - "BRD" => "DE"
-           
-        4. CONTEXTUAL REFERENCES:
+        3. CONTEXTUAL REFERENCES:
            - "Swiss law" => "CH"
            - "German regulations" => "DE"
            - "Chinese market" => "CN"
 
         EXTREMELY IMPORTANT:
-        - You MUST catch ALL country codes (DE, CH, US, etc.)
-        - Never skip any valid 2-letter code
-        - If in doubt, include it
+        - You MUST catch ALL ISO 3166-1 alpha-2 country codes (DE, CH, US, etc.)
+        - Never skip any valid ISO 3166-1 alpha-2 2-letter code or valid country full names >= 4 characters long
+        - If in doubt, don't include it
         - Process the ENTIRE text, not just the beginning
 
         Output format must be EXACT JSON:
